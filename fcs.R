@@ -4,6 +4,7 @@ library(ggplot2)
 library(spade)
 library(flowCore)
 library(lubridate)
+library(GGally)
 
 lgcl <- logicleTransform()
 
@@ -161,7 +162,8 @@ update.FCS.description <- function(file.name, keywords, read=FALSE) {
 }
 
 
-compute.density <- function(fcs.data, channels=c('FSC-A', 'SSC-A', 'CD25', 'CD4$', 'CD45RA'), kernel_mult=5.0, apprx_mult=1.5, med_samples=2000) {
+compute.density <- function(fcs.data, channels, kernel_mult=5.0, apprx_mult=1.5, med_samples=2000) {
+    if (missing(channels)) channels <- colnames(getChannels(fcs.data))
     SPADE.density(getChannels(fcs.data, channels), kernel_mult, apprx_mult, med_samples)
 }
 
@@ -262,5 +264,18 @@ marginal.2D.density <- function(fcs.data, channels, dir) {
         dev.off()
     }
 }
+
+
+### plot clusters for all channels in panel
+plot.clusters <- function(x, clustering, panel, pdf.filename, width=15, height=15) {
+    x <- data.frame(getChannels(x, getPanelChannels(panel)))
+    x$cluster <- as.character(clustering)
+    x <- na.omit(x)
+    pdf(pdf.filename, width=width, height=height)
+    print(ggpairs(x, columns=getPanelChannels(panel), colour='cluster', lower=list(continuous='density'), axisLabels='none', upper=list(continuous='blank')))
+    dev.off()
+}
+
+
 
 
