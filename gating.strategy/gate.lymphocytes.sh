@@ -37,9 +37,10 @@ function make_prior() {
     INFILE=$3
     rm --force $basedir/Err/prior.err
     rm --force $basedir/Out/prior.out
+    rm --force $basedir/Plot/prior.fcs.png
     chmod ug+rx $GATE_LYMPH
-    echo qsub -N make.prior$K -cwd -b y -u nikolas -e $basedir/Err/prior.err -o $basedir/Out/prior.out $GATE_LYMPH --in.file $INFILE --out.dir $basedir/RData --plot.dir $basedir/Plot --post.threshold .8 --down.sample $downsample -K $K --channels $channels
-    qsub -N make.prior$K -cwd -b y -u nikolas -e $basedir/Err/prior.err -o $basedir/Out/prior.out $GATE_LYMPH --in.file $INFILE --out.dir $basedir/RData --plot.dir $basedir/Plot --post.threshold .8 --down.sample $downsample -K $K --channels $channels
+    echo qsub -N make.prior$K -cwd -b y -u $USER -e $basedir/Err/prior.err -o $basedir/Out/prior.out $GATE_LYMPH --in.file $INFILE --out.dir $basedir/RData --plot.dir $basedir/Plot --post.threshold .8 --down.sample $downsample -K $K --channels $channels
+    qsub -N make.prior$K -cwd -b y -u $USER -e $basedir/Err/prior.err -o $basedir/Out/prior.out $GATE_LYMPH --in.file $INFILE --out.dir $basedir/RData --plot.dir $basedir/Plot --post.threshold .8 --down.sample $downsample -K $K --channels $channels
 }
 
 
@@ -49,21 +50,18 @@ function gate_lymph() {
     INFILE=$3
     rm --force $basedir/Out/*
     rm --force $basedir/Err/*
-    # wait until prior error file exists
+    # wait until prior plot file exists
     prior_err=${basedir}/Err/prior.err
-    while [ ! -f $prior_err ]
-    do
-      sleep 60
-    done
     prior=${basedir}/RData/prior.RData
     if [ ! -e $prior ]
     then
         echo $prior still does not exist!
-        echo check $prior_err
+        cat $prior_err
+        exit 1
     fi
     for x in `cat $INFILE`
         do
-        chmod ug+rx 
+        chmod ug+rx $GATE_LYMPH
         y=`basename $x`
         echo qsub -hold_jid make.prior$K -N $y -cwd -b y -u $USER -e ${basedir}/Err/${y%.fcs}.err -o ${basedir}/Out/${y%.fcs}.out $GATE_LYMPH --in.file $x --out.dir ${basedir}/RData --plot.dir ${basedir}/Plot --prior $prior --post.threshold .5 --down.sample $downsample -K $K --channels $channels
         qsub -hold_jid make.prior$K -N $y -cwd -b y -u $USER -e ${basedir}/Err/${y%.fcs}.err -o ${basedir}/Out/${y%.fcs}.out $GATE_LYMPH --in.file $x --out.dir ${basedir}/RData --plot.dir ${basedir}/Plot --prior $prior --post.threshold .5 --down.sample $downsample -K $K --channels $channels
@@ -79,7 +77,7 @@ function build() {
     echo "fcsFile,lymph.count$K" > $outfile
     cat $basedir/Out/*.out | grep lymph.count | cut -d'/' -f9 | cut -d, -f1,3 | sort >> $outfile
     echo $outfile
-    Rscript ~nikolas/IL2RA/bin/compare.lymph.count.R --file1 ~/IL2RA/CellPhenotypes/manual.csv --file2 $outfile --out.file $basedir/manual-agreement.pdf
+    Rscript ~$USER/IL2RA/bin/compare.lymph.count.R --file1 ~/IL2RA/CellPhenotypes/manual.csv --file2 $outfile --out.file $basedir/manual-agreement.pdf
 }
 
 
@@ -97,7 +95,7 @@ function build2() {
     echo $outfile
     #need to delete last line since it contains some artefact
     head -n -1 $outfile > $outfile
-    Rscript ~nikolas/IL2RA/bin/compare.lymph.count.R --file1 ~/IL2RA/CellPhenotypes/manual.csv --file2 $outfile --out.file $basedir/manual-agreement-mix.pdf
+    Rscript ~$USER/IL2RA/bin/compare.lymph.count.R --file1 ~/IL2RA/CellPhenotypes/manual.csv --file2 $outfile --out.file $basedir/manual-agreement-mix.pdf
 }
 
 
@@ -125,13 +123,22 @@ function main() {
         usage
     fi
     basedir=${basedir}/Lymphocytes$K
-    echo $basedir
+    echo basedir: $basedir
     mkdir -p $basedir
     mkdir -p $basedir/RData
     mkdir -p $basedir/Plot
     mkdir -p $basedir/Out
     mkdir -p $basedir/Err
     prior=${basedir}/RData/prior.RData
+    #check that all files in $gate are valid
+    while read -r f
+    do
+        if [[ ! -e $(eval echo $f) ]]
+        then
+            echo $f in $gate does not exist!
+            exit 1
+        fi
+    done < $gate
     if [ ! -e $prior ]
     then
         echo $prior does not exist!
@@ -139,6 +146,11 @@ function main() {
         n=`wc -l $gate | cut -f1 -d ' '`
         downsample=`echo "scale=0; 10000/$n" | bc -l`
         make_prior $K $downsample $gate
+        prior_plot=${basedir}/Plot/prior.fcs.png
+        while [ ! -f $prior_plot ]
+        do
+          sleep 60
+        done
         gate_lymph $K .1 $gate
     elif [ "$gate" != 0 ]
     then

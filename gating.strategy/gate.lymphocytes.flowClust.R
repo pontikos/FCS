@@ -1,4 +1,5 @@
-source('../fcs.R')
+#!/usr/bin/env Rscript
+source('~nikolas/bin/FCS/fcs.R',chdir=T)
 suppressPackageStartupMessages(library("optparse"))
 suppressMessages(suppressWarnings(suppressPackageStartupMessages(library(tools, quietly=TRUE, verbose=FALSE, warn.conflicts=FALSE))))
 suppressMessages(suppressWarnings(suppressPackageStartupMessages(library(flowClust, quietly=TRUE, verbose=FALSE, warn.conflicts=FALSE))))
@@ -29,7 +30,6 @@ rbox <- function(data, lambda) {
     if (length(lambda)>1 || lambda!=0) data <- sign(lambda*data+1)*(sign(lambda*data+1)*(lambda*data+1))^(1/lambda) else data <- exp(data)
     data
 }
-
 
 
 ## flowClust code
@@ -114,23 +114,22 @@ plotflowclust <- function(x, subset, py=3, ellipse=T, show.outliers=T, show.rm=F
 }
 
 
-
-
-
 ###
 ###
 plot.lymph <- function(d, res, lymph.filter=NULL, plot.file=NULL) {
-        mu <- getEstimates(res)
         png(plot.file)
         par(mfrow=c(2,2))
         for (chan in list(c('SSCA','FSCA'), c('FSCA','CD4'), c('SSCA','CD4'))) {
             smoothScatter(d[,chan])
-            plotflowclust(res, subset=chan)
             lymph <- d[lymph.filter,chan]
             points(lymph, pch=20, col='pink')
-            lymph.gate <- lymph[chull(lymph),]
-            lymph.gate <- rbind(lymph.gate, lymph.gate[1,])
-            lines(lymph[lymph.gate,chan], col='black', lwd=2)
+            lines(lymph[c(chull(lymph),chull(lymph)[1]),], col='black', lwd=2)
+            #lymph.gate <- c(chull(lymph), chull(lymph)[1])
+            #lymph.gate <- c(lymph.gate, lymph.gate[1])
+            #chuld <- lapply(lymph,"[",chull(lymph))
+            #polygon(chuld,lty=2,border="black")
+            #polygon(spline.poly(as.matrix(as.data.frame(chuld)),100),border="black",lwd=2)
+            plotflowclust(res, subset=chan)
         }
         #
         image(1:3,1:3,matrix(data=0,nrow=3,ncol=3), axes=FALSE, col='white', ylab='', xlab='')
@@ -354,13 +353,13 @@ if (is.null(opt$prior)) {
 } else {
     cat('Prior specified.\n')
     print(load(opt$prior))
-    #gate.lymph(d, down.sample=5000, K=4, level=.5, B=500, post.threshold=.99, channels=c('FSC-A','SSC-A','CD4'), usePrior='no', prior=NULL, plot.file=NULL)
     for (fcs.name in names(fcs.files)) {
         fcs.data <- fcs.files[[fcs.name]]
         print(fcs.name)
         if (!is.null(opt$plot.dir)) print(plot.file <- file.path(opt$plot.dir,paste(basename(fcs.name),'.png',sep='')))
         if (!is.null(opt$out.dir))  print(out.file <- file.path(opt$out.dir, paste(basename(fcs.name),'.RData',sep='')))
         if (file.exists(out.file)) {
+            cat(out.file, 'exists not running again!\n')
             print(load(out.file))
             lymph <- getChannels(fcs.data,channels)[lymph.filter,]
             write.csv(lymph,file=file.path(opt$out.dir, paste(basename(fcs.name),'.csv',sep='')),quote=FALSE,row.names=F)
