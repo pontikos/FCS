@@ -8,6 +8,9 @@ set -u
 #to turn on the extended pattern matching features
 shopt -s extglob
 
+GATE_LYMPH=gate.lymphocytes.flowClust.R
+GATE_LYMPH=`dirname $0`/$GATE_LYMPH
+
 
 function usage() {
     echo "syntax: $0"
@@ -34,9 +37,9 @@ function make_prior() {
     INFILE=$3
     rm --force $basedir/Err/prior.err
     rm --force $basedir/Out/prior.out
-    chmod ug+rx ~nikolas/bin/FCS/bin/gate.lymphocytes.R
-    echo qsub -N make.prior$K -cwd -b y -u nikolas -e $basedir/Err/prior.err -o $basedir/Out/prior.out ~nikolas/bin/FCS/bin/gate.lymphocytes.R --in.file $INFILE --out.dir $basedir/RData --plot.dir $basedir/Plot --post.threshold .8 --down.sample $downsample -K $K --channels $channels
-    qsub -N make.prior$K -cwd -b y -u nikolas -e $basedir/Err/prior.err -o $basedir/Out/prior.out ~nikolas/bin/FCS/bin/gate.lymphocytes.R --in.file $INFILE --out.dir $basedir/RData --plot.dir $basedir/Plot --post.threshold .8 --down.sample $downsample -K $K --channels $channels
+    chmod ug+rx $GATE_LYMPH
+    echo qsub -N make.prior$K -cwd -b y -u nikolas -e $basedir/Err/prior.err -o $basedir/Out/prior.out $GATE_LYMPH --in.file $INFILE --out.dir $basedir/RData --plot.dir $basedir/Plot --post.threshold .8 --down.sample $downsample -K $K --channels $channels
+    qsub -N make.prior$K -cwd -b y -u nikolas -e $basedir/Err/prior.err -o $basedir/Out/prior.out $GATE_LYMPH --in.file $INFILE --out.dir $basedir/RData --plot.dir $basedir/Plot --post.threshold .8 --down.sample $downsample -K $K --channels $channels
 }
 
 
@@ -60,10 +63,10 @@ function gate_lymph() {
     fi
     for x in `cat $INFILE`
         do
-        chmod ug+rx ~nikolas/bin/FCS/bin/gate.lymphocytes.R
+        chmod ug+rx 
         y=`basename $x`
-        echo qsub -hold_jid make.prior$K -N $y -cwd -b y -u nikolas -e ${basedir}/Err/${y%.fcs}.err -o ${basedir}/Out/${y%.fcs}.out ~nikolas/bin/FCS/bin/gate.lymphocytes.R --in.file $x --out.dir ${basedir}/RData --plot.dir ${basedir}/Plot --prior $prior --post.threshold .5 --down.sample $downsample -K $K --channels $channels
-        qsub -hold_jid make.prior$K -N $y -cwd -b y -u nikolas -e ${basedir}/Err/${y%.fcs}.err -o ${basedir}/Out/${y%.fcs}.out ~nikolas/bin/FCS/bin/gate.lymphocytes.R --in.file $x --out.dir ${basedir}/RData --plot.dir ${basedir}/Plot --prior $prior --post.threshold .5 --down.sample $downsample -K $K --channels $channels
+        echo qsub -hold_jid make.prior$K -N $y -cwd -b y -u $USER -e ${basedir}/Err/${y%.fcs}.err -o ${basedir}/Out/${y%.fcs}.out $GATE_LYMPH --in.file $x --out.dir ${basedir}/RData --plot.dir ${basedir}/Plot --prior $prior --post.threshold .5 --down.sample $downsample -K $K --channels $channels
+        qsub -hold_jid make.prior$K -N $y -cwd -b y -u $USER -e ${basedir}/Err/${y%.fcs}.err -o ${basedir}/Out/${y%.fcs}.out $GATE_LYMPH --in.file $x --out.dir ${basedir}/RData --plot.dir ${basedir}/Plot --prior $prior --post.threshold .5 --down.sample $downsample -K $K --channels $channels
         sleep 1
     done
 }
