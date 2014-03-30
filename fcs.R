@@ -5,16 +5,25 @@ library(spade)
 library(flowCore)
 library(lubridate)
 library(GGally)
+library(ellipse)
 
 lgcl <- logicleTransform()
+
+###
+normalised.density <- function(x) {
+    d <- density(x)
+    d$y <- d$y/sum(d$y)
+    return(d)
+}
+
 
 # Wrapper for the flowCore read.FCS function.
 # Applies compensation
 read.FCS <- function(file, channels=c(), comp=TRUE, verbose=FALSE, ...) {
 	if (verbose) fcs <- flowCore::read.FCS(file, ...)
 	else fcs <- suppressWarnings(flowCore::read.FCS(file, ...))
-    	params <- parameters(fcs)
-	pd     <- pData(params)
+    params <- fcs@parameters
+    pd <- pData(params)
     # Replace any null descs with names (for FSC-A, FSC-W, SSC-A)
   bad_col <- grep("^[a-zA-Z0-9]+",pd$desc,invert=TRUE)
 	if (length(bad_col) > 0) {
@@ -23,8 +32,8 @@ read.FCS <- function(file, channels=c(), comp=TRUE, verbose=FALSE, ...) {
 			pd$desc[i] <- pd$name[i]
 			keyval[[paste("$P",i,"S",sep="")]] <- pd$name[i]
 		}
-		pData(params) <- pd;
-		fcs <- flowFrame(exprs(fcs),params,description=description(fcs));
+		pData(params) <- pd
+		fcs <- flowFrame(exprs(fcs),params,description=description(fcs))
 		keyword(fcs) <- keyval
 	}
 #if FMO is present Marcin tells me this means he forgot a stain
@@ -36,26 +45,41 @@ read.FCS <- function(file, channels=c(), comp=TRUE, verbose=FALSE, ...) {
 	# out of the flowFrame, i.e we should only have to do this once
 	apply.comp <- function(in_fcs, keyword) {
 		comp_fcs <- compensate(in_fcs, description(in_fcs)[[keyword]])
-		flowFrame(exprs(comp_fcs), parameters(comp_fcs), description(comp_fcs)[grep("SPILL",names(description(comp_fcs)),invert=TRUE)])
-	}
-	
+		#flowFrame(exprs(comp_fcs), parameters(comp_fcs), description(comp_fcs)[grep("SPILL",names(description(comp_fcs)),invert=TRUE)])
+		flowFrame(exprs(comp_fcs), comp_fcs@parameters, description(comp_fcs)[grep("SPILL",names(description(comp_fcs)),invert=TRUE)])
+	} 
 	if (comp && !is.null(description(fcs)$SPILL)) {
 		fcs <- apply.comp(fcs, "SPILL")
 	} else if (comp && !is.null(description(fcs)$SPILLOVER)) {
 		fcs <- apply.comp(fcs, "SPILLOVER")
 	}
-    #remove negative scatter
-    fcs <- fcs[fcs@exprs[,'SSC-A']>1,]
-    fcs <- fcs[fcs@exprs[,'FSC-A']>1,]
-    #truncate side scatter at 500 
-    fcs <- fcs[fcs@exprs[,'SSC-A']>500,]
-    for (channel in channels) {
-        #i <- grep( channel, parameters(fcs)@data$desc, ignore.case=T )
-        if (channel == 'FSC-A') trans <- function(x) 5*x/262144
-        else if (channel == 'SSC-A') trans <- log10
-        else trans <- logicleTransform()
-        #fcs@exprs[,i] <- trans(fcs@exprs[,i])
-        fcs <- setChannels(fcs, channel, trans(getChannels(fcs, channel)))
+    if (fcs@description$FCSversion=='3') {
+        #remove negative scatter
+        fcs <- fcs[fcs@exprs[,'SSC-A']>1,]
+        fcs <- fcs[fcs@exprs[,'FSC-A']>1,]
+        #truncate side scatter at 500 
+        fcs <- fcs[fcs@exprs[,'SSC-A']>500,]
+        #truncate side scatter at 15000 
+        #fcs <- fcs[fcs@exprs[,'SSC-A']>15000,]
+        #fcs <- fcs[fcs@exprs[,'SSC-A']<100000,]
+        #fcs <- fcs[fcs@exprs[,'FSC-A']>40000,]
+        for (channel in channels) {
+            #i <- grep( channel, parameters(fcs)@data$desc, ignore.case=T )
+            if (channel == 'FSC-A') trans <- function(x) 5*x/262144
+            else if (channel == 'SSC-A') trans <- log10
+            else trans <- logicleTransform()
+            #fcs@exprs[,i] <- trans(fcs@exprs[,i])
+            fcs <- setChannels(fcs, channel, trans(getChannels(fcs, channel)))
+        }
+    } else if (fcs@description$FCSversion=='2') {
+        for (channel in channels) {
+            #if (channel == 'FSC-A') trans <- function(x) 5*x/262144
+            if (channel == 'FSC-A') trans <- identity
+            else if (channel == 'SSC-A') trans <-identity 
+            else trans <- log10
+            #fcs@exprs[,i] <- trans(fcs@exprs[,i])
+            fcs <- setChannels(fcs, channel, trans(getChannels(fcs, channel)))
+        }
     }
     #remove min & max scatter
     min.ssc <- min(fcs@exprs[,'SSC-A'])
@@ -64,8 +88,94 @@ read.FCS <- function(file, channels=c(), comp=TRUE, verbose=FALSE, ...) {
     min.fsc <- min(fcs@exprs[,'FSC-A'])
     max.fsc <- max(fcs@exprs[,'FSC-A'])
     fcs <- fcs[min.fsc < fcs@exprs[,'FSC-A'] & fcs@exprs[,'FSC-A'] < max.fsc,]
-    fcs
+    #
+    #fcs <- fcs[fcs@exprs[,'FSC-A']<3,]
+    return(fcs)
 }
+
+
+# Wrapper for the flowCore read.FCS function.
+# Assumes that FSC-A and SSC-A always exits in file.
+# Applies compensation
+# Returns matrix
+read.FCS.matrix <- function(file, channels=NULL, comp=TRUE, verbose=FALSE, ...) {
+    if (!file.exists(file)) stop(paste(file, 'does not exist!\n'))
+    if (verbose) print(dim(fcs <- flowCore::read.FCS(file, ...)))
+    else fcs <- suppressWarnings(flowCore::read.FCS(file, ...))
+    # Compensate data if SPILL or SPILLOVER present, stripping compensation matrix 
+    # out of the flowFrame, i.e we should only have to do this once
+    apply.comp <- function(in_fcs, keyword) {
+        comp_fcs <- compensate(in_fcs, description(in_fcs)[[keyword]])
+        #flowFrame(exprs(comp_fcs), parameters(comp_fcs), description(comp_fcs)[grep("SPILL",names(description(comp_fcs)),invert=TRUE)])
+        flowFrame(exprs(comp_fcs), comp_fcs@parameters, description(comp_fcs)[grep("SPILL",names(description(comp_fcs)),invert=TRUE)])
+    } 
+    if (comp && !is.null(description(fcs)$SPILL)) {
+        fcs <- apply.comp(fcs, "SPILL")
+    } else if (comp && !is.null(description(fcs)$SPILLOVER)) {
+        fcs <- apply.comp(fcs, "SPILLOVER")
+    }
+
+    params <- fcs@parameters
+    pd <- pData(params)
+    # Replace any null descs with names (for FSC-A, FSC-W, SSC-A)
+    bad_col <- grep("^[a-zA-Z0-9]+",pd$desc,invert=TRUE)
+    if (length(bad_col) > 0) {
+        keyval <- keyword(fcs)
+        for (i in bad_col) {
+            pd$desc[i] <- pd$name[i]
+            keyval[[paste("$P",i,"S",sep="")]] <- pd$name[i]
+        }
+        pData(params) <- pd
+        fcs <- flowFrame(exprs(fcs),params,description=description(fcs))
+        keyword(fcs) <- keyval
+    }
+    #if FMO is present Marcin tells me this means he forgot a stain
+    if ( 'FMO' %in% colnames(getChannels(fcs)) ) {
+        warning('FMO channel! Returning NULL.\n')
+        return(NULL)
+    }
+    # only keep the data matrix
+    X <- fcs@exprs
+    colnames(X) <- gsub('[- ]', '.', toupper(fcs@parameters@data$desc))
+    #remove min & max scatter
+    min.ssc <- min(X[,'SSC.A'])
+    max.ssc <- max(X[,'SSC.A'])
+    X <- X[min.ssc < X[,'SSC.A'] & X[,'SSC.A'] < max.ssc,]
+    min.fsc <- min(X[,'FSC.A'])
+    max.fsc <- max(X[,'FSC.A'])
+    X <- X[min.fsc < X[,'FSC.A'] & X[,'FSC.A'] < max.fsc,]
+    # do the transforms based on the fcs file format
+    if (fcs@description$FCSversion=='3') {
+        #remove negative scatter
+        X <- X[X[,'SSC.A']>1,]
+        X <- X[X[,'FSC.A']>1,]
+        #truncate side scatter at 500 
+        X <- X[X[,'SSC.A']>500,]
+        #truncate side scatter at 15000 
+        for (channel in colnames(X)) {
+            if (channel == 'FSC.A') trans <- function(x) 5*x/262144
+            else if (channel == 'SSC.A') trans <- log10
+            else if (channel == 'TIME') trans <- identity
+            else trans <- logicleTransform()
+            X[,channel] <- trans(X[,channel])
+        }
+    } else if (fcs@description$FCSversion=='2') {
+        for (channel in colnames(X)) {
+            if (channel == 'FSC.A') trans <- identity
+            else if (channel == 'SSC.A') trans <-identity 
+            else if (channel == 'TIME') trans <- identity
+            else trans <- log10
+            X[,channel] <- trans(X[,channel])
+        }
+    }
+    for (channel in colnames(X)) {
+        x <- X[,channel]
+        X <- X[min(x) < x & x < max(x),]
+    }
+    if (is.null(channels)) return(X)
+    else return(X[,channels])
+}
+
 
 build.flowFrame <- function(x) {
 	if (!is.matrix(x)) {
@@ -104,6 +214,25 @@ getDate <- function(x) format(as.Date(dmy(x@description$`$DATE`, quiet=T)), '%Y-
 getSSC <- function(x) x@exprs[,'SSC-A']
 getFSC <- function(x) x@exprs[,'FSC-A']
 
+
+matchChannelNames <- function(channels, fcs.channels) {
+   matches <- c()
+    channels <- tolower(channels)
+    fcs.channels <- tolower(fcs.channels)
+    for (chan in channels) {
+        if (length(m <- which(chan == fcs.channels))) {
+            matches <- c(matches, m)
+        } else if (length(m <- grep(chan, fcs.channels,value=TRUE))) {
+            m <- m[which.min(sapply(m, length))]
+            matches <- c(matches, which(m==fcs.channels))
+        } else {
+            warning(paste('could not find', chan, 'in', paste(fcs.channels, collapse=',')))
+        }
+    }
+    return(matches)
+}
+
+
 getChannels <- function(fcs.data, channels) {
     if (is(fcs.data,'matrix') || is(fcs.data,'data.frame')) {
         if (missing(channels)) channels <- colnames(fcs.data)
@@ -111,10 +240,14 @@ getChannels <- function(fcs.data, channels) {
         fcs.channels <- gsub('-','',colnames(fcs.data))
         x <- as.matrix(fcs.data[,sapply(channels, function(x) grep(x, fcs.channels, ignore.case=T))])
     } else if (is(fcs.data, 'flowFrame')) {
-        if (missing(channels)) channels <- parameters(fcs.data)@data$desc
-        channels <- gsub('-', '', paste(channels, ifelse(!grepl('-', channels), '$', ''), sep=''))
-        fcs.channels <- gsub('-','',parameters(fcs.data)@data$desc)
-        x <- as.matrix(fcs.data@exprs[,sapply(channels, function(x) grep(x, fcs.channels, ignore.case=T))])
+        fcs.channels <- gsub('-','',fcs.data@parameters@data$desc)
+        if (missing(channels)) {
+            channels <- fcs.channels
+            x <- as.matrix( fcs.data@exprs[,sapply(channels, function(x) match(x, fcs.channels))] )
+        } else {
+            matches <- matchChannelNames(channels, fcs.channels)
+            x <- as.matrix(fcs.data@exprs[,matches])
+        }
     } else {
         stop('Unrecognised type:', class(fcs.data))
     }
@@ -132,13 +265,15 @@ exprs <- function(fcs.data) {
 
 setChannels <- function(fcs.data, channels, x) {
     #colnames(x) <- gsub('\\$','',channels)
-    channels <- gsub('-','',paste(channels, ifelse(!grepl('-', channels), '$', ''), sep=''))
+    #channels <- gsub('-','',paste(channels, ifelse(!grepl('-', channels), '$', ''), sep=''))
+    channels <- gsub('-','',channels)
     if (is(fcs.data,'matrix') || is(fcs.data,'data.frame')) {
         fcs.channels <- gsub('-','',colnames(fcs.data))
         fcs.data[,sapply(channels, function(x) grep( x, fcs.channels, ignore.case=T ))] <- x
     } else if (is(fcs.data, 'flowFrame')) {
-        fcs.channels <- gsub('-','',parameters(fcs.data)@data$desc)
-        fcs.data@exprs[,sapply(channels, function(x) grep( x, fcs.channels, ignore.case=T ))] <- x
+        fcs.channels <- gsub('-','',fcs.data@parameters@data$desc)
+        #fcs.data@exprs[,sapply(channels, function(x) grep( x, fcs.channels, ignore.case=T ))] <- x
+        fcs.data@exprs[,matchChannelNames(channels,fcs.channels)] <- x
     }
     fcs.data
 }
@@ -161,11 +296,6 @@ update.FCS.description <- function(file.name, keywords, read=FALSE) {
     }
 }
 
-
-compute.density <- function(fcs.data, channels, kernel_mult=5.0, apprx_mult=1.5, med_samples=2000) {
-    if (missing(channels)) channels <- colnames(getChannels(fcs.data))
-    SPADE.density(getChannels(fcs.data, channels), kernel_mult, apprx_mult, med_samples)
-}
 
 
 downsample.indexes <- function(fcs.data, density, desired_samples=20000, verbose=TRUE) {
@@ -275,6 +405,223 @@ plot.clusters <- function(x, clustering, panel, pdf.filename, width=15, height=1
     print(ggpairs(x, columns=getPanelChannels(panel), colour='cluster', lower=list(continuous='density'), axisLabels='none', upper=list(continuous='blank')))
     dev.off()
 }
+
+
+pairs.smoothScatter <- function(x,hdr=FALSE) print( pairs(x, lower.panel=NULL, upper.panel = function(x,y, ...) {
+                                                smoothScatter(x,y, ..., nrpoints = 0, add = TRUE)
+                                                if(hdr) {
+                                                    X <- cbind(x,y)
+                                                    fs <- featureSignif(X)
+                                                    points(X[fs$curvData,],pch=20,col='red')
+                                                } }) )
+
+
+#pairs.featureSignif <- function(x) print( pairs(x, panel = function(x,y,...) { par(new=TRUE); plot(featureSignif(cbind(x,y))); }) )
+                                               
+
+plot.clusters <- function(x, classification=NULL, posteriors=NULL, posterior.cutoff=.95, uncertainty=NULL, uncertainty.cutoff=.95, outliers=NULL) {
+print( pairs(x, panel = function(x,y,...) {
+       smoothScatter(x,y, ..., nrpoints = 0, add = TRUE)
+       X <- cbind(x,y)
+           if (!is.null(classification))
+           for (k in sort(unique(classification))) {
+               X1 <- X[which(classification==k),]
+               #X1 <- X1[sample(1:nrow(X1), nrow(X1)/2),]
+               p <- X1[chull(X1),]
+               p <- rbind(p, p)
+               lines(p, col=k, lwd=1.5)
+               #points(X1, pch=20, col=k)
+           } 
+           if (!is.null(posteriors))
+           for (k in 1:ncol(posteriors)) {
+               X1 <- X[posteriors[,k]>posterior.cutoff,]
+               p <- X1[chull(X1),]
+               p <- rbind(p, p)
+               lines(p, col=k, lwd=1.5)
+               #points(X1, pch=20, col=k)
+           } 
+           if (!is.null(uncertainty)) points(X[uncertainty>uncertainty.cutoff,], pch=20, col='red')
+           if (!is.null(outliers)) points(X[outliers,], pch=20, col='red')
+       })
+       #points(X[-which(rowSums(dens<.5)==21),],pch=20,col='red')
+       #points(X, col=k, pch='.')
+    )
+}
+
+
+box <- function (data, lambda) {
+    if (length(lambda) > 1 || lambda == 1) return(data)
+    else if (length(lambda) > 1 || lambda != 0) return((sign(data) * abs(data)^lambda - 1)/lambda)
+    else if (is.na(lambda) || is.null(lambda)) return(data)
+    else return(log(data))
+}
+
+rbox <- function (data, lambda) 
+{
+    if (length(lambda) > 1 || lambda == 1) return(data)
+    else if (length(lambda) > 1 || lambda != 0) return(sign(lambda * data + 1) * (sign(lambda * data + 1) * (lambda * data + 1))^(1/lambda))
+    else if (is.na(lambda) || is.null(lambda)) return(data)
+    else return(exp(data))
+}
+
+
+###
+plotFlowClustRes <- function(x, res, K=1:res@K, outliers=FALSE, plot.file=NULL) {
+    x <- box(x, res@lambda)
+    col.names <- colnames(x)
+    nc <- ncol(x)
+    if (!outliers) x <- x[!res@flagOutliers,]
+    print(table(clustering <- MAP(x, res)))
+    cat('>>',plot.file,'\n')
+    if (!is.null(plot.file)) png(plot.file)
+    oma <- rep(1,4)
+    #mar <- rep(3,4)
+    #opar <- par(mfrow = c(nc, nc), mar = rep.int(1/2, 4), oma = oma)
+    par(mfrow = c(nc, nc))
+    for (n in 1:length(col.names)) {
+        for (n2 in 1:length(col.names)) {
+            if (n != n2) {
+                dim.inds <- c(n2,n)
+                smoothScatter(x[,dim.inds])
+                for (i in K) {
+                    points(t(as.matrix(res@mu[i,dim.inds])),pch=20,col=i)
+                    lines(ellipse(res@sigma[i,dim.inds,dim.inds],centre=res@mu[i,dim.inds]),col=i,lwd=2,lty=1)
+                }
+                #for(i in 1:prior$K){
+                    #points(t(as.matrix(prior$Mu0[i,dim.inds])),pch=20,col=i)
+                    #lines(ellipse(prior$Lambda0[i,dim.inds,dim.inds]/(prior$nu0[i]-nc-1),centre=prior$Mu0[i,dim.inds]),col=i,lwd=2,lty=2)
+                #}
+            #diagonal contains univariate densities
+            } else {
+                d <- normalised.density(x[,n])
+                plot(d,main=col.names[[n]])
+                for (i in K) lines(normalised.density(x[which(clustering==i),n]), col=i, lwd=2)
+            }
+       }
+    }
+    if (!is.null(plot.file)) dev.off()
+}
+
+###
+plotMClustRes <- function(x, res, K=1:res$G, plot.file=NULL) {
+    col.names <- colnames(x)
+    nc <- ncol(x)
+    cat('>>',plot.file,'\n')
+    if (!is.null(plot.file)) png(plot.file)
+    print(table(clustering <- res$classification))
+    oma <- rep(1,4)
+    #mar <- rep(3,4)
+    #opar <- par(mfrow = c(nc, nc), mar = rep.int(1/2, 4), oma = oma)
+    par(mfrow = c(nc, nc))
+    for (n in 1:length(col.names)) {
+        for (n2 in 1:length(col.names)) {
+            if (n != n2) {
+                dim.inds <- c(n2,n)
+                smoothScatter(x[,dim.inds])
+                print(dim.inds)
+                for (i in K) {
+                    points(t(as.matrix(res$parameters$mean[dim.inds,i])),pch=20,col=i)
+                    lines(ellipse(res$parameters$variance$sigma[dim.inds,dim.inds,i],centre=t(res$parameters$mean[dim.inds,i])),col=i,lwd=2,lty=1)
+                }
+            #diagonal contains univariate densities
+            } else {
+                d <- normalised.density(x[,n])
+                plot(d,main=col.names[[n]])
+                for (i in K) lines(normalised.density(x[which(clustering==i),n]), col=i, lwd=2)
+            }
+       }
+    }
+    if (!is.null(plot.file)) dev.off()
+}
+
+
+
+
+### density at each point for each flowClust component
+compute.dens <- function(d, res) sapply(1:res@K, function(i) res@w[i]*flowClust::dmvt(d, mu=res@mu[i,], sigma=res@sigma[i,,], nu=res@nu, lambda=res@lambda)$value)
+
+### return the component assignment
+MAP <- function(d, res) {
+    dens <- compute.dens(d, res)
+    total.dens <- rowSums(dens)
+    post <- dens/total.dens 
+    apply(post,1,which.max)
+}
+
+
+###
+plotDensity <- function(x, k=NULL) {
+print( pairs(x, panel = function(x,y,...) {
+             X <- cbind(x,y)
+             #kde2D(X
+       smoothScatter(x,y, ..., nrpoints = 0, add = TRUE)
+       X <- cbind(x,y)
+       if (!is.null(k)) {
+           for (i in 1:max(k)){
+               X1 <- X[k==i,]
+               p <- X1[chull(X1),]
+               p <- c(p, p[[1]])
+               lines(p, col=i)
+            }
+       }
+       #points(X, col=k, pch='.')
+      }))
+}
+
+
+#dens <- apply(t(combn(colnames(x),2)), 1, function(y) kde2D(x[,y]))
+
+dens <- function(x,bw) {
+    o<-apply(x,2,order)
+    x<-apply(x,2,sort)
+    d <- apply(x,2, function(x) {
+        count <- c()
+        i <- 1
+        while (i <= length(x)) {
+            if (1 < i && x[i]-x[i-1] < bw**10) {
+                count <- c(count,count[length(count)])
+            } else {
+                #forwards
+                j <- k <- i
+                while( j <= length(x) && x[j]-x[i] < bw ) j<-j+1
+                #backwards
+                while( 1 <= k && x[i]-x[k] < bw ) k<-k-1
+                count <- c(count,j-k)
+            }
+            (i<-i+1)
+        }
+        return(count)
+        })
+    d <- t(t(sapply(1:ncol(x), function(i) d[o[,i],i])))
+    colnames(d) <- colnames(x)
+    return(sweep(d, 2, colSums(d), '/'))
+    #return(d)
+}
+
+
+dens <- function(x) {
+    d <- apply(x,2, function(x) {
+          d <- density(x)
+          f <- splinefun(d$x,d$y)
+          f(x)
+        })
+    m <- apply(sweep(d, 2, colSums(d), '/'), 1, function(i) colnames(x)[which.max(i)])
+    #apply(sweep(d, 2, colSums(d), '/'), 1, function(i) mean(i)/var(i))
+    w <- prop.table(table(m))
+    w <- 1/w
+    w <- w/sum(w)
+    d <- t(apply(d, 1, function(x) x*w))
+    sweep(d, 2, colSums(d), '/')
+}
+
+
+
+dens <- function(x, bw=.1, n=512) {
+    d <- apply(x, 2, function(x) density(x,bw,n)$y)
+    return(sweep(d, 2, colSums(d), '/'))
+}
+
+
 
 
 
