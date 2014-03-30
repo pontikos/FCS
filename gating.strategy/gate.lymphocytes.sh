@@ -23,6 +23,8 @@ function usage() {
     #echo "      -g : Gate list of files specified in csv file"
     #echo "      -l : Build lymph count file"
     echo " -g : <file of FCS filenames> Looks for prior under <basedir>/RData/prior.RData. If no prior is found, first compute prior from FCS files. Then gate lymphocytes."
+    #echo " -p : <CD4 Lymph CD4 MFI> The expected MFI of the CD4+ lymph cluster."
+    #echo " -p : <population number> Number of population in prior."
     echo " -h : Prints this message."
     exit 1
 }
@@ -35,12 +37,13 @@ function make_prior() {
     K=$1
     downsample=$2
     INFILE=$3
+    p=$4
     rm --force $basedir/Err/prior.err
     rm --force $basedir/Out/prior.out
     rm --force $basedir/Plot/prior.fcs.png
     chmod ug+rx $GATE_LYMPH
-    echo qsub -N make.prior$K -cwd -b y -u $USER -e $basedir/Err/prior.err -o $basedir/Out/prior.out $GATE_LYMPH --in.file $INFILE --out.dir $basedir/RData --plot.dir $basedir/Plot --post.threshold .8 --down.sample $downsample -K $K --channels $channels
-    qsub -N make.prior$K -cwd -b y -u $USER -e $basedir/Err/prior.err -o $basedir/Out/prior.out $GATE_LYMPH --in.file $INFILE --out.dir $basedir/RData --plot.dir $basedir/Plot --post.threshold .8 --down.sample $downsample -K $K --channels $channels
+    echo qsub -N make.prior$K -cwd -b y -u $USER -e $basedir/Err/prior.err -o $basedir/Out/prior.out $GATE_LYMPH --in.file $INFILE --out.dir $basedir/RData --plot.dir $basedir/Plot --post.threshold .8 --down.sample $downsample -K $K --channels $channels --cd4.mfi $p
+    qsub -N make.prior$K -cwd -b y -u $USER -e $basedir/Err/prior.err -o $basedir/Out/prior.out $GATE_LYMPH --in.file $INFILE --out.dir $basedir/RData --plot.dir $basedir/Plot --post.threshold .8 --down.sample $downsample -K $K --channels $channels --cd4.mfi $p
 }
 
 
@@ -48,11 +51,12 @@ function gate_lymph() {
     K=$1
     downsample=$2
     INFILE=$3
+    p=$4
     rm --force $basedir/Out/*
     rm --force $basedir/Err/*
     # wait until prior plot file exists
     prior_err=${basedir}/Err/prior.err
-    prior=${basedir}/RData/prior.RData
+    #prior=${basedir}/RData/prior.RData
     if [ ! -e $prior ]
     then
         echo $prior still does not exist!
@@ -63,67 +67,69 @@ function gate_lymph() {
         do
         chmod ug+rx $GATE_LYMPH
         y=`basename $x`
-        echo qsub -hold_jid make.prior$K -N $y -cwd -b y -u $USER -e ${basedir}/Err/${y%.fcs}.err -o ${basedir}/Out/${y%.fcs}.out $GATE_LYMPH --in.file $x --out.dir ${basedir}/RData --plot.dir ${basedir}/Plot --prior $prior --post.threshold .5 --down.sample $downsample -K $K --channels $channels
-        qsub -hold_jid make.prior$K -N $y -cwd -b y -u $USER -e ${basedir}/Err/${y%.fcs}.err -o ${basedir}/Out/${y%.fcs}.out $GATE_LYMPH --in.file $x --out.dir ${basedir}/RData --plot.dir ${basedir}/Plot --prior $prior --post.threshold .5 --down.sample $downsample -K $K --channels $channels
+        echo qsub -hold_jid make.prior$K -N J$y -cwd -b y -u $USER -e ${basedir}/Err/${y%.fcs}.err -o ${basedir}/Out/${y%.fcs}.out $GATE_LYMPH --in.file $x --out.dir ${basedir}/RData --plot.dir ${basedir}/Plot --prior $prior --post.threshold .5 --down.sample $downsample -K $K --channels $channels --cd4.mfi $p
+        qsub -hold_jid make.prior$K -N J$y -cwd -b y -u $USER -e ${basedir}/Err/${y%.fcs}.err -o ${basedir}/Out/${y%.fcs}.out $GATE_LYMPH --in.file $x --out.dir ${basedir}/RData --plot.dir ${basedir}/Plot --prior $prior --post.threshold .5 --down.sample $downsample -K $K --channels $channels --cd4.mfi $p
         sleep 1
     done
 }
 
 
 
-function build() {
+# compares to manually gated phenotype
+function compare() {
     K=$1
     outfile=$basedir/Out/lymph.count$K.csv
     echo "fcsFile,lymph.count$K" > $outfile
     cat $basedir/Out/*.out | grep lymph.count | cut -d'/' -f9 | cut -d, -f1,3 | sort >> $outfile
     echo $outfile
-    Rscript ~$USER/IL2RA/bin/compare.lymph.count.R --file1 ~/IL2RA/CellPhenotypes/manual.csv --file2 $outfile --out.file $basedir/manual-agreement.pdf
+    echo $basedir/manual-agreement.pdf
+    echo $basedir/manual-agreement.csv
+    Rscript $HOME/Projects/IL2RA/bin/compare.lymph.count.R --file1 $HOME/Projects/IL2RA/CellPhenotypes/manual.csv --file2 $outfile --out.file $basedir/manual-agreement.pdf > $basedir/manual-agreement.csv
 }
 
 
-function build2() {
-    K=$1
-    outfile=$basedir/Out/lymph.count.mix$K.csv
-    echo "fcsFile,lymph.count$K" > $outfile
-    for f in $basedir/RData/*.RData
-    do
-        echo $f
-        x=`echo "load('${f}'); Sys.sleep(1); count <- round(dim(d)[1]*res@w[which.max(res@mu[,3])]); print(count);" | R --no-save --no-restore --silent | grep '[1]'`
-        x=`echo $x | awk '{print($(NF))}'`
-        echo `basename "${f%.RData}"`,$x >> $outfile
-    done
-    echo $outfile
-    #need to delete last line since it contains some artefact
-    head -n -1 $outfile > $outfile
-    Rscript ~$USER/IL2RA/bin/compare.lymph.count.R --file1 ~/IL2RA/CellPhenotypes/manual.csv --file2 $outfile --out.file $basedir/manual-agreement-mix.pdf
-}
-
-
-
-
+# args are set in README of each project
 function main() {
+    K=
     channels=FSCA,SSCA,CD4
     basedir=
-    K=0
     gate=
-    build=0
+    p=
+    downsample=.95
+    ## IL2 stim
+    #basedir=~/dunwich/Projects/IL2/PSTAT5-CD25-CD45RA-CD4-FOXP3
+    #gate=${basedir}/PSTAT5-CD25-CD45RA-CD4-FOXP3.csv
+    #gate=${basedir}/head20-PSTAT5-CD25-CD45RA-CD4-FOXP3.csv
+    #gate=${basedir}/failed.csv
+    #p=2.5
+    ## IL2RA
+    #basedir=~/dunwich/Projects/IL2RA/
+    #gate=${basedir}/prior-FCS.csv
+    #gate=${basedir}/all-FCS.csv
+    #p=3
+    ## DILT1D
+    #basedir=~/dunwich/Projects/DILT1D/donor7/EFF/
+    #gate=${basedir}/EFF-fcs.csv
+    #p=3
     #parse the args
-    while getopts "c:b:K:g:h" optionName
+    while getopts "c:b:K:g:p:h" optionName
     do
         case "$optionName" in
         c) channels=$OPTARG;;
         b) basedir=$OPTARG;;
         K) K=$OPTARG;;
         g) gate=$OPTARG;;
+        p) p=$OPTARG;;
         ?) usage 0;;
         esac
     done
-    if [[ "$K" -le 0 || "$basedir" == "" || "$gate" == "" ]]
+    if [[ "$K" -le 0 || "$basedir" == "" ]]
     then
         usage
     fi
     basedir=${basedir}/Lymphocytes$K
     echo basedir: $basedir
+    echo infile: $gate
     mkdir -p $basedir
     mkdir -p $basedir/RData
     mkdir -p $basedir/Plot
@@ -131,37 +137,43 @@ function main() {
     mkdir -p $basedir/Err
     prior=${basedir}/RData/prior.RData
     #check that all files in $gate are valid
-    while read -r f
-    do
-        if [[ ! -e $(eval echo $f) ]]
+    if [[ "$gate" != "" ]]
+    then
+        if [[ ! -e $gate ]]
         then
-            echo $f in $gate does not exist!
+            echo $gate file does not exist!
             exit 1
         fi
-    done < $gate
+        while read -r f
+        do
+            if [[ ! -e $(eval echo $f) ]]
+            then
+                echo $f in $gate does not exist!
+                exit 1
+            fi
+        done < $gate
+    fi
     if [ ! -e $prior ]
     then
         echo $prior does not exist!
         echo will create prior
         n=`wc -l $gate | cut -f1 -d ' '`
+        #n=`cat $gate | wc -l`
+        echo $n
         downsample=`echo "scale=0; 10000/$n" | bc -l`
-        make_prior $K $downsample $gate
+        make_prior $K $downsample $gate $p
         prior_plot=${basedir}/Plot/prior.fcs.png
         while [ ! -f $prior_plot ]
         do
           sleep 60
         done
-        gate_lymph $K .1 $gate
-    elif [ "$gate" != 0 ]
+        gate_lymph $K .1 $gate $p
+    elif [ "$gate" != "" ]
     then
         echo $prior exists
-        gate_lymph $K .1 $gate
-    elif [ "$build" = 1 ]
-    then
-        build $K
-    elif [ "$build" = 2 ]
-    then
-        build2 $K
+        gate_lymph $K $downsample $gate $p
+    else
+        compare $K
     fi
 }
 
