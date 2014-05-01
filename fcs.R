@@ -1,19 +1,36 @@
-library(gtable)
-library(scales)
-library(ggplot2)
-library(spade)
-library(flowCore)
-library(lubridate)
-library(GGally)
-library(ellipse)
+suppressPackageStartupMessages(library(gtable))
+suppressPackageStartupMessages(library(scales))
+suppressPackageStartupMessages(library(ggplot2))
+suppressPackageStartupMessages(library(flowCore))
+suppressPackageStartupMessages(library(lubridate))
+suppressPackageStartupMessages(library(GGally))
+suppressPackageStartupMessages(library(ellipse))
 
-lgcl <- logicleTransform()
+#set w=0 is important to avoid spurious peaks close to zero
+lgcl <- logicleTransform(w=0.1)
 
 ###
 normalised.density <- function(x) {
     d <- density(x)
     d$y <- d$y/sum(d$y)
     return(d)
+}
+
+# 
+box <- function (data, lambda) {
+    if (length(lambda) > 1 || lambda == 1) return(data)
+    else if (length(lambda) > 1 || lambda != 0) return((sign(data) * abs(data)^lambda - 1)/lambda)
+    else if (is.na(lambda) || is.null(lambda)) return(data)
+    else return(log(data))
+}
+
+# to perform reverse box-cox transformation (multivariate)
+rbox <- function (data, lambda) 
+{
+    if (length(lambda) > 1 || lambda == 1) return(data)
+    else if (length(lambda) > 1 || lambda != 0) return(sign(lambda * data + 1) * (sign(lambda * data + 1) * (lambda * data + 1))^(1/lambda))
+    else if (is.na(lambda) || is.null(lambda)) return(data)
+    else return(exp(data))
 }
 
 
@@ -53,12 +70,16 @@ read.FCS <- function(file, channels=c(), comp=TRUE, verbose=FALSE, ...) {
 	} else if (comp && !is.null(description(fcs)$SPILLOVER)) {
 		fcs <- apply.comp(fcs, "SPILLOVER")
 	}
+    #some filtering happens here
+    dim(fcs)
     if (fcs@description$FCSversion=='3') {
         #remove negative scatter
         fcs <- fcs[fcs@exprs[,'SSC-A']>1,]
         fcs <- fcs[fcs@exprs[,'FSC-A']>1,]
         #truncate side scatter at 500 
         fcs <- fcs[fcs@exprs[,'SSC-A']>500,]
+        #truncate forward scatter at 100 
+        fcs <- fcs[fcs@exprs[,'FSC-A']>100,]
         #truncate side scatter at 15000 
         #fcs <- fcs[fcs@exprs[,'SSC-A']>15000,]
         #fcs <- fcs[fcs@exprs[,'SSC-A']<100000,]
@@ -67,7 +88,7 @@ read.FCS <- function(file, channels=c(), comp=TRUE, verbose=FALSE, ...) {
             #i <- grep( channel, parameters(fcs)@data$desc, ignore.case=T )
             if (channel == 'FSC-A') trans <- function(x) 5*x/262144
             else if (channel == 'SSC-A') trans <- log10
-            else trans <- logicleTransform()
+            else trans <- lgcl
             #fcs@exprs[,i] <- trans(fcs@exprs[,i])
             fcs <- setChannels(fcs, channel, trans(getChannels(fcs, channel)))
         }
@@ -90,8 +111,10 @@ read.FCS <- function(file, channels=c(), comp=TRUE, verbose=FALSE, ...) {
     fcs <- fcs[min.fsc < fcs@exprs[,'FSC-A'] & fcs@exprs[,'FSC-A'] < max.fsc,]
     #
     #fcs <- fcs[fcs@exprs[,'FSC-A']<3,]
+    dim(fcs)
     return(fcs)
 }
+
 
 
 # Wrapper for the flowCore read.FCS function.
@@ -151,12 +174,14 @@ read.FCS.matrix <- function(file, channels=NULL, comp=TRUE, verbose=FALSE, ...) 
         X <- X[X[,'FSC.A']>1,]
         #truncate side scatter at 500 
         X <- X[X[,'SSC.A']>500,]
+        #truncate forward scatter at 100 
+        fcs <- fcs[fcs@exprs[,'FSC.A']>100,]
         #truncate side scatter at 15000 
         for (channel in colnames(X)) {
             if (channel == 'FSC.A') trans <- function(x) 5*x/262144
             else if (channel == 'SSC.A') trans <- log10
             else if (channel == 'TIME') trans <- identity
-            else trans <- logicleTransform()
+            else trans <- lgcl
             X[,channel] <- trans(X[,channel])
         }
     } else if (fcs@description$FCSversion=='2') {
@@ -449,43 +474,34 @@ print( pairs(x, panel = function(x,y,...) {
 }
 
 
-box <- function (data, lambda) {
-    if (length(lambda) > 1 || lambda == 1) return(data)
-    else if (length(lambda) > 1 || lambda != 0) return((sign(data) * abs(data)^lambda - 1)/lambda)
-    else if (is.na(lambda) || is.null(lambda)) return(data)
-    else return(log(data))
-}
-
-rbox <- function (data, lambda) 
-{
-    if (length(lambda) > 1 || lambda == 1) return(data)
-    else if (length(lambda) > 1 || lambda != 0) return(sign(lambda * data + 1) * (sign(lambda * data + 1) * (lambda * data + 1))^(1/lambda))
-    else if (is.na(lambda) || is.null(lambda)) return(data)
-    else return(exp(data))
-}
-
-
 ###
-plotFlowClustRes <- function(x, res, K=1:res@K, outliers=FALSE, plot.file=NULL) {
+plotFlowClustRes <- function(x, res, K=1:res@K, outliers=FALSE, plot.file=NULL, channels=NULL, col=1:res@K) {
     x <- box(x, res@lambda)
-    col.names <- colnames(x)
-    nc <- ncol(x)
-    if (!outliers) x <- x[!res@flagOutliers,]
+    if (is.null(channels)) {
+        col.names <- colnames(x)
+        nc <- ncol(x)
+    } else {
+        col.names <- channels
+        nc <- length(channels)
+    }
+    if (!outliers) x <- x[which(!res@flagOutliers),]
     print(table(clustering <- MAP(x, res)))
     cat('>>',plot.file,'\n')
     if (!is.null(plot.file)) png(plot.file)
-    oma <- rep(1,4)
     #mar <- rep(3,4)
     #opar <- par(mfrow = c(nc, nc), mar = rep.int(1/2, 4), oma = oma)
-    par(mfrow = c(nc, nc))
+    par(mfrow = c(nc, nc), mai=c(.2,.2,.2,.2), oma=c(2,3,2,.5))
     for (n in 1:length(col.names)) {
+            ylab <- ''
+            xlab <- ''
+            main <- ''
         for (n2 in 1:length(col.names)) {
             if (n != n2) {
                 dim.inds <- c(n2,n)
-                smoothScatter(x[,dim.inds])
+                smoothScatter(x[,dim.inds],main=main,xlab=xlab,ylab=ylab)
                 for (i in K) {
-                    points(t(as.matrix(res@mu[i,dim.inds])),pch=20,col=i)
-                    lines(ellipse(res@sigma[i,dim.inds,dim.inds],centre=res@mu[i,dim.inds]),col=i,lwd=2,lty=1)
+                    points(t(as.matrix(res@mu[i,dim.inds])),pch=20,col=col[i])
+                    lines(ellipse(res@sigma[i,dim.inds,dim.inds],centre=res@mu[i,dim.inds]),col=col[i],lwd=2,lty=1)
                 }
                 #for(i in 1:prior$K){
                     #points(t(as.matrix(prior$Mu0[i,dim.inds])),pch=20,col=i)
@@ -494,9 +510,12 @@ plotFlowClustRes <- function(x, res, K=1:res@K, outliers=FALSE, plot.file=NULL) 
             #diagonal contains univariate densities
             } else {
                 d <- normalised.density(x[,n])
-                plot(d,main=col.names[[n]])
-                for (i in K) lines(normalised.density(x[which(clustering==i),n]), col=i, lwd=2)
+                plot(d,main=main,xlab=xlab,ylab=ylab)
+                for (i in K) lines(normalised.density(x[which(clustering==i),n]), col=col[i], lwd=2)
             }
+            if (n==1) mtext(col.names[[n2]], side=3, cex=2, line=1) 
+            if (n2==1) mtext(col.names[[n]], side=2, cex=2, line=2)
+            #if (n2==length(col.names)) mtext(col.names[[n]], side=4, cex=2, line=2)
        }
     }
     if (!is.null(plot.file)) dev.off()
@@ -535,17 +554,33 @@ plotMClustRes <- function(x, res, K=1:res$G, plot.file=NULL) {
 }
 
 
-
-
 ### density at each point for each flowClust component
 compute.dens <- function(d, res) sapply(1:res@K, function(i) res@w[i]*flowClust::dmvt(d, mu=res@mu[i,], sigma=res@sigma[i,,], nu=res@nu, lambda=res@lambda)$value)
 
-### return the component assignment
-MAP <- function(d, res) {
+### outliers are points which follow below a given quantile of density
+outliers <- function(d, res, dens.threshold=.05) {
+    dens <- compute.dens(d, res)
+    quants <- quantile(dens, probs=seq(0,1,dens.threshold))
+    return(dens<quants[[2]])
+}
+
+### outliers are points which lie beyond a certain distance from the 
+
+### posterior of each point for each flowClust component
+compute.post <- function(d, res) {
     dens <- compute.dens(d, res)
     total.dens <- rowSums(dens)
-    post <- dens/total.dens 
-    apply(post,1,which.max)
+    dens/total.dens 
+}
+
+### return the component assignment
+MAP <- function(d, res, post.threshold=NULL) {
+    d <- box(d, res@lambda)
+    post <- compute.post(d,res)
+    if (is.null(post.threshold))
+        apply(post,1,which.max)
+    else
+        apply(post,1,function(x)ifelse(length(which(x>post.threshold))>0,which.max(x),NA))
 }
 
 
