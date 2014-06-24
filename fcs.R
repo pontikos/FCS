@@ -1,4 +1,3 @@
-suppressPackageStartupMessages(library(gtable))
 suppressPackageStartupMessages(library(scales))
 suppressPackageStartupMessages(library(ggplot2))
 suppressPackageStartupMessages(library(flowCore))
@@ -34,15 +33,50 @@ rbox <- function (data, lambda)
 }
 
 
+prior.flowClust <- function(d, prior.res, B=500, level=.9, u.cutoff=.5, post.threshold=.99, kappa=1) {
+    prior <- flowClust2Prior(prior.res,kappa=kappa) 
+    return(flowClust::flowClust(d,K=prior.res@K,B=B,usePrior='yes',prior=prior,level=level,u.cutoff=u.cutoff,trans=0,lambda=1,control=list(B.lambda=0)))
+}
+
+fcs3.filter <- function(fcs) {
+        #remove negative scatter
+        fcs <- fcs[fcs@exprs[,'SSC-A']>1,]
+        fcs <- fcs[fcs@exprs[,'FSC-A']>1,]
+        #truncate side scatter at 500 
+        fcs <- fcs[fcs@exprs[,'SSC-A']>500,]
+        #truncate forward scatter at 100 
+        fcs <- fcs[fcs@exprs[,'FSC-A']>100,]
+        #truncate side scatter at 15000 
+        #fcs <- fcs[fcs@exprs[,'SSC-A']>15000,]
+        #fcs <- fcs[fcs@exprs[,'SSC-A']<100000,]
+        #fcs <- fcs[fcs@exprs[,'FSC-A']>40000,]
+        return(fcs)
+}
+
+fcs.filter <- function(fcs) {
+    #remove min & max scatter
+    min.ssc <- min(fcs@exprs[,'SSC-A'])
+    max.ssc <- max(fcs@exprs[,'SSC-A'])
+    fcs <- fcs[min.ssc < fcs@exprs[,'SSC-A'] & fcs@exprs[,'SSC-A'] < max.ssc,]
+    min.fsc <- min(fcs@exprs[,'FSC-A'])
+    max.fsc <- max(fcs@exprs[,'FSC-A'])
+    fcs <- fcs[min.fsc < fcs@exprs[,'FSC-A'] & fcs@exprs[,'FSC-A'] < max.fsc,]
+    return(fcs)
+}
+
+
 # Wrapper for the flowCore read.FCS function.
-# Applies compensation
-read.FCS <- function(file, channels=c(), comp=TRUE, verbose=FALSE, ...) {
+# Optionally applies compensation, transforms
+# (this needs to be a parameter)
+# 
+# Returns
+read.FCS <- function(file, EXPRS=TRUE, FILTER=FALSE, channels=c(), COMP=TRUE, TRANS=TRUE, verbose=FALSE, ...) {
 	if (verbose) fcs <- flowCore::read.FCS(file, ...)
 	else fcs <- suppressWarnings(flowCore::read.FCS(file, ...))
     params <- fcs@parameters
     pd <- pData(params)
     # Replace any null descs with names (for FSC-A, FSC-W, SSC-A)
-  bad_col <- grep("^[a-zA-Z0-9]+",pd$desc,invert=TRUE)
+    bad_col <- grep("^[a-zA-Z0-9]+",pd$desc,invert=TRUE)
 	if (length(bad_col) > 0) {
 		keyval <- keyword(fcs)
 		for (i in bad_col) {
@@ -65,28 +99,19 @@ read.FCS <- function(file, channels=c(), comp=TRUE, verbose=FALSE, ...) {
 		#flowFrame(exprs(comp_fcs), parameters(comp_fcs), description(comp_fcs)[grep("SPILL",names(description(comp_fcs)),invert=TRUE)])
 		flowFrame(exprs(comp_fcs), comp_fcs@parameters, description(comp_fcs)[grep("SPILL",names(description(comp_fcs)),invert=TRUE)])
 	} 
-	if (comp && !is.null(description(fcs)$SPILL)) {
+	if (COMP && !is.null(description(fcs)$SPILL)) {
 		fcs <- apply.comp(fcs, "SPILL")
-	} else if (comp && !is.null(description(fcs)$SPILLOVER)) {
+	} else if (COMP && !is.null(description(fcs)$SPILLOVER)) {
 		fcs <- apply.comp(fcs, "SPILLOVER")
 	}
     #some filtering happens here
     dim(fcs)
     if (fcs@description$FCSversion=='3') {
-        #remove negative scatter
-        fcs <- fcs[fcs@exprs[,'SSC-A']>1,]
-        fcs <- fcs[fcs@exprs[,'FSC-A']>1,]
-        #truncate side scatter at 500 
-        fcs <- fcs[fcs@exprs[,'SSC-A']>500,]
-        #truncate forward scatter at 100 
-        fcs <- fcs[fcs@exprs[,'FSC-A']>100,]
-        #truncate side scatter at 15000 
-        #fcs <- fcs[fcs@exprs[,'SSC-A']>15000,]
-        #fcs <- fcs[fcs@exprs[,'SSC-A']<100000,]
-        #fcs <- fcs[fcs@exprs[,'FSC-A']>40000,]
+        if (FILTER) fcs <- fcs3.filter(fcs)
         for (channel in channels) {
             #i <- grep( channel, parameters(fcs)@data$desc, ignore.case=T )
-            if (channel == 'FSC-A') trans <- function(x) 5*x/262144
+            if (!TRANS) trans <- identity
+            else if (channel == 'FSC-A') trans <- function(x) 5*x/262144
             else if (channel == 'SSC-A') trans <- log10
             else trans <- lgcl
             #fcs@exprs[,i] <- trans(fcs@exprs[,i])
@@ -95,24 +120,18 @@ read.FCS <- function(file, channels=c(), comp=TRUE, verbose=FALSE, ...) {
     } else if (fcs@description$FCSversion=='2') {
         for (channel in channels) {
             #if (channel == 'FSC-A') trans <- function(x) 5*x/262144
-            if (channel == 'FSC-A') trans <- identity
+            if (!TRANS) trans <- identity
+            else if (channel == 'FSC-A') trans <- identity
             else if (channel == 'SSC-A') trans <-identity 
             else trans <- log10
             #fcs@exprs[,i] <- trans(fcs@exprs[,i])
             fcs <- setChannels(fcs, channel, trans(getChannels(fcs, channel)))
         }
     }
-    #remove min & max scatter
-    min.ssc <- min(fcs@exprs[,'SSC-A'])
-    max.ssc <- max(fcs@exprs[,'SSC-A'])
-    fcs <- fcs[min.ssc < fcs@exprs[,'SSC-A'] & fcs@exprs[,'SSC-A'] < max.ssc,]
-    min.fsc <- min(fcs@exprs[,'FSC-A'])
-    max.fsc <- max(fcs@exprs[,'FSC-A'])
-    fcs <- fcs[min.fsc < fcs@exprs[,'FSC-A'] & fcs@exprs[,'FSC-A'] < max.fsc,]
-    #
-    #fcs <- fcs[fcs@exprs[,'FSC-A']<3,]
+    if (FILTER) fcs <- fcs.filter(fcs)
     dim(fcs)
-    return(fcs)
+    if (EXPRS) return(getChannels(fcs, channels=channels))
+    else return(fcs)
 }
 
 
@@ -444,7 +463,7 @@ pairs.smoothScatter <- function(x,hdr=FALSE) print( pairs(x, lower.panel=NULL, u
 #pairs.featureSignif <- function(x) print( pairs(x, panel = function(x,y,...) { par(new=TRUE); plot(featureSignif(cbind(x,y))); }) )
                                                
 
-plot.clusters <- function(x, classification=NULL, posteriors=NULL, posterior.cutoff=.95, uncertainty=NULL, uncertainty.cutoff=.95, outliers=NULL) {
+plot.clusters <- function(x, classification=NULL, posteriors=NULL, posterior.cutoff=.95, uncertainty=NULL, uncertainty.cutoff=.95, outliers=NULL, radius=1) {
 print( pairs(x, panel = function(x,y,...) {
        smoothScatter(x,y, ..., nrpoints = 0, add = TRUE)
        X <- cbind(x,y)
@@ -454,16 +473,20 @@ print( pairs(x, panel = function(x,y,...) {
                #X1 <- X1[sample(1:nrow(X1), nrow(X1)/2),]
                p <- X1[chull(X1),]
                p <- rbind(p, p)
-               lines(p, col=k, lwd=1.5)
+               lines(p, col=k, lwd=.5)
                #points(X1, pch=20, col=k)
            } 
            if (!is.null(posteriors))
            for (k in 1:ncol(posteriors)) {
                X1 <- X[posteriors[,k]>posterior.cutoff,]
-               p <- X1[chull(X1),]
-               p <- rbind(p, p)
-               lines(p, col=k, lwd=1.5)
-               #points(X1, pch=20, col=k)
+               ch <- c(chull(X1),chull(X1))
+               p <- X1[ch,]
+               #p <- rbind(p, p)
+               lines(p, col=k, lwd=.5)
+               #also approximate with an ellipse
+               #car::ellipse(center=colMeans(X1), shape=cov(X1), radius=radius, col=k, lwd=1.5, center.pch=FALSE)
+               lines(ellipse::ellipse(cov(X1),centre=colMeans(X1)),col=k,lwd=1.5)
+
            } 
            if (!is.null(uncertainty)) points(X[uncertainty>uncertainty.cutoff,], pch=20, col='red')
            if (!is.null(outliers)) points(X[outliers,], pch=20, col='red')
@@ -472,6 +495,69 @@ print( pairs(x, panel = function(x,y,...) {
        #points(X, col=k, pch='.')
     )
 }
+
+
+###
+plotClusters <- function(x, plot.file=NULL, channels=NULL, classification=NULL, posteriors=NULL, posterior.cutoff=.95, uncertainty=NULL, uncertainty.cutoff=.95) {
+    if (is.null(channels)) {
+        col.names <- colnames(x)
+        nc <- ncol(x)
+    } else {
+        col.names <- channels
+        nc <- length(channels)
+    }
+    cat('>>',plot.file,'\n')
+    if (!is.null(plot.file)) png(plot.file)
+    par(mfrow = c(nc, nc), mai=c(.2,.2,.2,.2), oma=c(2,3,2,.5))
+    for (n in 1:length(col.names)) {
+            ylab <- ''
+            xlab <- ''
+            main <- ''
+        for (n2 in 1:length(col.names)) {
+            #off-diagonal terms containing bivariate densities
+            if (n != n2) {
+               dim.inds <- c(n2,n)
+               smoothScatter(x[,dim.inds],main=main,xlab=xlab,ylab=ylab)
+               if (!is.null(classification))
+               for (k in sort(unique(classification))) {
+                   X1 <- x[which(classification==k),dim.inds]
+                   p <- X1[chull(X1),]
+                   p <- rbind(p, p)
+                   lines(p, col=k, lwd=.5)
+               } 
+               if (!is.null(posteriors))
+               for (k in 1:ncol(posteriors)) {
+                   X1 <- x[posteriors[,k]>posterior.cutoff,dim.inds]
+                   ch <- c(chull(X1),chull(X1))
+                   p <- X1[ch,]
+                   #p <- rbind(p, p)
+                   lines(p, col=k, lwd=.5)
+                   #also approximate with an ellipse
+                   lines(ellipse::ellipse(cov(X1),centre=colMeans(X1)),col=k,lwd=2,lty=1)
+               } 
+            #diagonal contains univariate densities
+            } else {
+               d <- normalised.density(x[,n])
+               plot(d,main=main,xlab=xlab,ylab=ylab)
+               if (!is.null(classification))
+               for (k in sort(unique(classification))) {
+                   X1 <- x[which(classification==k),n]
+                   if (length(X1)>2) lines(normalised.density(X1), col=k, lwd=2)
+               } 
+               if (!is.null(posteriors))
+               for (k in 1:ncol(posteriors)) {
+                   X1 <- x[posteriors[,k]>posterior.cutoff,n]
+                   if (length(X1)>2) lines(normalised.density(X1), col=k, lwd=2)
+               } 
+            }
+            if (n==1) mtext(col.names[[n2]], side=3, cex=2, line=1) 
+            if (n2==1) mtext(col.names[[n]], side=2, cex=2, line=2)
+       }
+    }
+    if (!is.null(plot.file)) dev.off()
+}
+
+
 
 
 ###
@@ -501,7 +587,9 @@ plotFlowClustRes <- function(x, res, K=1:res@K, outliers=FALSE, plot.file=NULL, 
                 smoothScatter(x[,dim.inds],main=main,xlab=xlab,ylab=ylab)
                 for (i in K) {
                     points(t(as.matrix(res@mu[i,dim.inds])),pch=20,col=col[i])
-                    lines(ellipse(res@sigma[i,dim.inds,dim.inds],centre=res@mu[i,dim.inds]),col=col[i],lwd=2,lty=1)
+                    mu <- res@mu[i,dim.inds]
+                    sigma <- res@sigma[i,dim.inds,dim.inds]
+                    lines(ellipse::ellipse(sigma,centre=mu),col=col[i],lwd=2,lty=1)
                 }
                 #for(i in 1:prior$K){
                     #points(t(as.matrix(prior$Mu0[i,dim.inds])),pch=20,col=i)
@@ -511,7 +599,10 @@ plotFlowClustRes <- function(x, res, K=1:res@K, outliers=FALSE, plot.file=NULL, 
             } else {
                 d <- normalised.density(x[,n])
                 plot(d,main=main,xlab=xlab,ylab=ylab)
-                for (i in K) lines(normalised.density(x[which(clustering==i),n]), col=col[i], lwd=2)
+                for (i in K) {
+                    cl <- which(clustering==i)
+                    if (length(cl)>2) lines(normalised.density(x[cl,n]), col=col[i], lwd=2)
+                }
             }
             if (n==1) mtext(col.names[[n2]], side=3, cex=2, line=1) 
             if (n2==1) mtext(col.names[[n]], side=2, cex=2, line=2)
