@@ -463,40 +463,6 @@ pairs.smoothScatter <- function(x,hdr=FALSE) print( pairs(x, lower.panel=NULL, u
 #pairs.featureSignif <- function(x) print( pairs(x, panel = function(x,y,...) { par(new=TRUE); plot(featureSignif(cbind(x,y))); }) )
                                                
 
-plot.clusters <- function(x, classification=NULL, posteriors=NULL, posterior.cutoff=.95, uncertainty=NULL, uncertainty.cutoff=.95, outliers=NULL, radius=1) {
-print( pairs(x, panel = function(x,y,...) {
-       smoothScatter(x,y, ..., nrpoints = 0, add = TRUE)
-       X <- cbind(x,y)
-           if (!is.null(classification))
-           for (k in sort(unique(classification))) {
-               X1 <- X[which(classification==k),]
-               #X1 <- X1[sample(1:nrow(X1), nrow(X1)/2),]
-               p <- X1[chull(X1),]
-               p <- rbind(p, p)
-               lines(p, col=k, lwd=.5)
-               #points(X1, pch=20, col=k)
-           } 
-           if (!is.null(posteriors))
-           for (k in 1:ncol(posteriors)) {
-               X1 <- X[posteriors[,k]>posterior.cutoff,]
-               ch <- c(chull(X1),chull(X1))
-               p <- X1[ch,]
-               #p <- rbind(p, p)
-               lines(p, col=k, lwd=.5)
-               #also approximate with an ellipse
-               #car::ellipse(center=colMeans(X1), shape=cov(X1), radius=radius, col=k, lwd=1.5, center.pch=FALSE)
-               lines(ellipse::ellipse(cov(X1),centre=colMeans(X1)),col=k,lwd=1.5)
-
-           } 
-           if (!is.null(uncertainty)) points(X[uncertainty>uncertainty.cutoff,], pch=20, col='red')
-           if (!is.null(outliers)) points(X[outliers,], pch=20, col='red')
-       })
-       #points(X[-which(rowSums(dens<.5)==21),],pch=20,col='red')
-       #points(X, col=k, pch='.')
-    )
-}
-
-
 ###
 plotClusters <- function(x, plot.file=NULL, channels=NULL, classification=NULL, posteriors=NULL, posterior.cutoff=.95, uncertainty=NULL, uncertainty.cutoff=.95) {
     if (is.null(channels)) {
@@ -556,7 +522,6 @@ plotClusters <- function(x, plot.file=NULL, channels=NULL, classification=NULL, 
     }
     if (!is.null(plot.file)) dev.off()
 }
-
 
 
 
