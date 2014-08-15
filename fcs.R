@@ -1,12 +1,19 @@
+suppressPackageStartupMessages(library(KernSmooth))
+suppressPackageStartupMessages(library(iterators))
 suppressPackageStartupMessages(library(scales))
 suppressPackageStartupMessages(library(ggplot2))
 suppressPackageStartupMessages(library(flowCore))
 suppressPackageStartupMessages(library(lubridate))
 suppressPackageStartupMessages(library(GGally))
 suppressPackageStartupMessages(library(ellipse))
+suppressPackageStartupMessages(library(mvtnorm))
+suppressPackageStartupMessages(library(tools))
+suppressPackageStartupMessages(library(mixtools))
 
 #set w=0 is important to avoid spurious peaks close to zero
 lgcl <- logicleTransform(w=0.1)
+
+colMedians <- function(x) apply(x,2,median)
 
 ###
 normalised.density <- function(x) {
@@ -70,7 +77,7 @@ fcs.filter <- function(fcs) {
 # (this needs to be a parameter)
 # 
 # Returns
-read.FCS <- function(file, EXPRS=TRUE, FILTER=FALSE, channels=c(), COMP=TRUE, TRANS=TRUE, verbose=FALSE, ...) {
+read.FCS <- function(file, EXPRS=TRUE, FILTER=FALSE, channels=c(), COMP=TRUE, verbose=FALSE, TRANS=logicleTransform(w=0.1), ...) {
 	if (verbose) fcs <- flowCore::read.FCS(file, ...)
 	else fcs <- suppressWarnings(flowCore::read.FCS(file, ...))
     params <- fcs@parameters
@@ -110,17 +117,17 @@ read.FCS <- function(file, EXPRS=TRUE, FILTER=FALSE, channels=c(), COMP=TRUE, TR
         if (FILTER) fcs <- fcs3.filter(fcs)
         for (channel in channels) {
             #i <- grep( channel, parameters(fcs)@data$desc, ignore.case=T )
-            if (!TRANS) trans <- identity
+            if (is.null(TRANS)) trans <- identity
             else if (channel == 'FSC-A') trans <- function(x) 5*x/262144
             else if (channel == 'SSC-A') trans <- log10
-            else trans <- lgcl
+            else trans <- TRANS
             #fcs@exprs[,i] <- trans(fcs@exprs[,i])
             fcs <- setChannels(fcs, channel, trans(getChannels(fcs, channel)))
         }
     } else if (fcs@description$FCSversion=='2') {
         for (channel in channels) {
             #if (channel == 'FSC-A') trans <- function(x) 5*x/262144
-            if (!TRANS) trans <- identity
+            if (is.null(TRANS)) trans <- identity
             else if (channel == 'FSC-A') trans <- identity
             else if (channel == 'SSC-A') trans <-identity 
             else trans <- log10
@@ -134,7 +141,30 @@ read.FCS <- function(file, EXPRS=TRUE, FILTER=FALSE, channels=c(), COMP=TRUE, TR
     else return(fcs)
 }
 
-
+#returns a matrix
+read.flow.file <- function(filename,channels) {
+  cat('File extension', file.ext <- tolower(file_ext(filename)), '\n')
+  if (file.ext=='fcs') {
+      #fcs file
+      print(head(fcs.data <- getChannels(read.FCS(filename, channels=channels),channels)))
+      #My version of read.FCS discards events on axis if filtered, so total count is less that what is in FCS file initially.
+      print(total.count <- as.numeric(read.FCSheader(filename,keyword='$TOT')))
+  } else if (file.ext=='csv') {
+      #csv file
+      print(head(fcs.data <- read.csv(filename)[,channels]))
+      print(total.count <- dim(fcs.data)[[1]])
+  } else if (file.ext=='rdata') {
+      print(load(filename))
+      if (exists('result'))
+          print(head( fcs.data <- result$d.original[result$lymph.filter,][result$singlet.filter,channels] ))
+      else
+          print(head( fcs.data <- fcs.data[,channels] ))
+      print(total.count <- dim(fcs.data)[[1]])
+  } else {
+      stop('Unsupported file extension', file.ext,'\n')
+  }
+  return(fcs.data)
+}
 
 # Wrapper for the flowCore read.FCS function.
 # Assumes that FSC-A and SSC-A always exits in file.
@@ -247,13 +277,16 @@ build.flowFrame <- function(x) {
   flowFrame(x, as(data.frame(pd), "AnnotatedDataFrame"), description=dl)
 }
 
-
-
 getIndividual <- function(x) x@description$INDIVIDUAL
 
 getDose <- function(x) x@description$DOSE
 
-getDate <- function(x) format(as.Date(dmy(x@description$`$DATE`, quiet=T)), '%Y-%m-%d')
+getDate <- function(x) {
+    if (class(x)=='flowCore')
+        format(as.Date(dmy(x@description$`$DATE`, quiet=T)), '%Y-%m-%d')
+    else if (class(x)=='character')
+        format(as.Date(dmy(flowCore::read.FCS(x)@description$`$DATE`, quiet=T)), '%Y-%m-%d')
+}
 
 getSSC <- function(x) x@exprs[,'SSC-A']
 getFSC <- function(x) x@exprs[,'FSC-A']
@@ -464,14 +497,9 @@ pairs.smoothScatter <- function(x,hdr=FALSE) print( pairs(x, lower.panel=NULL, u
                                                
 
 ###
-plotClusters <- function(x, plot.file=NULL, channels=NULL, classification=NULL, posteriors=NULL, posterior.cutoff=.95) {
-    if (is.null(channels)) {
-        col.names <- colnames(x)
-        nc <- ncol(x)
-    } else {
-        col.names <- channels
-        nc <- length(channels)
-    }
+plotClusters <- function(x, plot.points=NULL, plot.file=NULL, classification=NULL, posteriors=NULL, posterior.cutoff=.95, outliers=FALSE, ellipses=TRUE, chulls=TRUE, chull.lwd=.5, MIRROR=FALSE) {
+    col.names <- colnames(x)
+    nc <- ncol(x)
     cat('>>',plot.file,'\n')
     if (!is.null(plot.file)) png(plot.file)
     par(mfrow = c(nc, nc), mai=c(.2,.2,.2,.2), oma=c(2,3,2,.5))
@@ -481,17 +509,18 @@ plotClusters <- function(x, plot.file=NULL, channels=NULL, classification=NULL, 
             main <- ''
         for (n2 in 1:length(col.names)) {
             #off-diagonal terms containing bivariate densities
-            if (n != n2) {
+            if ( (n < n2) || ((n > n2)&&MIRROR) ) {
                dim.inds <- c(n2,n)
-               smoothScatter(x[,dim.inds],main=main,xlab=xlab,ylab=ylab)
+               smoothPlot(x[,dim.inds],main=main,xlab=xlab,ylab=ylab, outliers=outliers)
+               if (!is.null(plot.points)) points(plot.points[,col.names[dim.inds]], col='black', pch=20)
                if (!is.null(classification))
                for (k in sort(unique(classification))) {
                    X1 <- x[which(classification==k),dim.inds]
                    p <- X1[chull(X1),]
                    p <- rbind(p, p)
-                   lines(p, col=k, lwd=.5)
+                   lines(p, col=k, lwd=chull.lwd)
                    #also approximate with an ellipse
-                   lines(ellipse::ellipse(cov(X1),centre=colMeans(X1)),col=k,lwd=2,lty=1)
+                   if (ellipses) lines(ellipse::ellipse(cov(X1),centre=colMeans(X1)),col=k,lwd=2,lty=1)
                } 
                if (!is.null(posteriors))
                for (k in 1:ncol(posteriors)) {
@@ -501,15 +530,19 @@ plotClusters <- function(x, plot.file=NULL, channels=NULL, classification=NULL, 
                        #make sure chull is not open
                        ch <- c(chull(X1),chull(X1))
                        p <- X1[ch,]
-                       lines(p, col=k, lwd=.5)
+                       lines(p, col=k, lwd=chull.lwd)
                        #also approximate with an ellipse
-                       lines(ellipse::ellipse(cov(X1),centre=colMeans(X1)),col=k,lwd=2,lty=1)
+                       if (ellipses) lines(ellipse::ellipse(cov(X1),centre=colMeans(X1)),col=k,lwd=2,lty=1)
                    }
                } 
             #diagonal contains univariate densities
-            } else {
+            } else if (n == n2) {
+               q1 <- quantile(x[,n],probs=c(0.01,0.99))
                d <- normalised.density(x[,n])
-               plot(d,main=main,xlab=xlab,ylab=ylab)
+               if (!outliers)
+                   plot(d,main=main,xlab=xlab,ylab=ylab,xlim=c(q1[['1%']],q1[['99%']]))
+               else
+                   plot(d,main=main,xlab=xlab,ylab=ylab)
                if (!is.null(classification))
                for (k in sort(unique(classification))) {
                    X1 <- x[which(classification==k),n]
@@ -520,61 +553,21 @@ plotClusters <- function(x, plot.file=NULL, channels=NULL, classification=NULL, 
                    X1 <- x[posteriors[,k]>posterior.cutoff,n]
                    if (length(X1)>2) lines(normalised.density(X1), col=k, lwd=2)
                } 
-            }
-            if (n==1) mtext(col.names[[n2]], side=3, cex=2, line=1) 
-            if (n2==1) mtext(col.names[[n]], side=2, cex=2, line=2)
-       }
-    }
-    if (!is.null(plot.file)) dev.off()
-}
-
-  
-###
-plotClustRes.flowClust <- function(x, res, K=1:res@K, outliers=TRUE, plot.file=NULL, channels=NULL, col=1:res@K) {
-
-    cat('>>',plot.file,'\n')
-    if (!is.null(plot.file)) png(plot.file)
-    par(mfrow = c(nc, nc), mai=c(.2,.2,.2,.2), oma=c(2,3,2,.5))
-    for (n in 1:length(col.names)) {
-            ylab <- ''
-            xlab <- ''
-            main <- ''
-        for (n2 in 1:length(col.names)) {
-            #off-diagonal terms containing bivariate densities
-            if (n != n2) {
-                dim.inds <- c(n2,n)
-                smoothScatter(x[,dim.inds],main=main,xlab=xlab,ylab=ylab)
-                for (i in K) {
-                    points(t(as.matrix(res@mu[i,dim.inds])),pch=20,col=col[i])
-                    mu <- res@mu[i,dim.inds]
-                    sigma <- res@sigma[i,dim.inds,dim.inds]
-                    lines(ellipse::ellipse(sigma,centre=mu),col=col[i],lwd=2,lty=1)
-                }
-                #for(i in 1:prior$K){
-                    #points(t(as.matrix(prior$Mu0[i,dim.inds])),pch=20,col=i)
-                    #lines(ellipse(prior$Lambda0[i,dim.inds,dim.inds]/(prior$nu0[i]-nc-1),centre=prior$Mu0[i,dim.inds]),col=i,lwd=2,lty=2)
-                #}
-            #diagonal contains univariate densities
             } else {
-                d <- normalised.density(x[,n])
-                plot(d,main=main,xlab=xlab,ylab=ylab)
-                for (i in K) {
-                    cl <- which(clustering==i)
-                    if (length(cl)>2) lines(normalised.density(x[cl,n]), col=col[i], lwd=2)
-                }
+                frame()
             }
             if (n==1) mtext(col.names[[n2]], side=3, cex=2, line=1) 
             if (n2==1) mtext(col.names[[n]], side=2, cex=2, line=2)
-            #if (n2==length(col.names)) mtext(col.names[[n]], side=4, cex=2, line=2)
        }
     }
     if (!is.null(plot.file)) dev.off()
+    par(mfrow=c(1,1))
 }
 
 ### Supports flowClust and Mclust res.
 ### Can apply model to new data.
 ### @parameter 
-plotClustRes <- function(x, res, outliers=TRUE, plot.file=NULL) {
+plotClustRes <- function(x, res, before.res=NULL, outliers=TRUE, plot.file=NULL, cex=2) {
   print(col.names <- colnames(x))
   nc <- ncol(x)
   if (class(res)=='Mclust') {
@@ -589,10 +582,11 @@ plotClustRes <- function(x, res, outliers=TRUE, plot.file=NULL) {
     nc <- length(col.names)
     x <- x[,col.names]
     if (!outliers) x <- x[which(!res@flagOutliers),]
-    print(table(clustering <- MAP(x, res)))
+    print(head(clustering <- MAP(x, res)))
+    if (!is.null(before.res)) print(head(before.clustering <- MAP(x, before.res)))
   }
   cat('>>',plot.file,'\n')
-  if (!is.null(plot.file)) png(plot.file)
+  if (!is.null(plot.file)) match.fun(file_ext(plot.file))(plot.file)
   par(mfrow = c(nc, nc), mai=c(.2,.2,.2,.2), oma=c(2,3,2,.5))
   for (n in 1:length(col.names)) {
             ylab <- ''
@@ -600,15 +594,22 @@ plotClustRes <- function(x, res, outliers=TRUE, plot.file=NULL) {
             main <- ''
      for (n2 in 1:length(col.names)) {
             #off-diagonal terms containing bivariate densities
-            if (n != n2) {
+            if (n < n2) {
                 dim.inds <- c(n2,n)
-                smoothScatter(x[,dim.inds],main=main,xlab=xlab,ylab=ylab)
+                smoothScatter(x[,dim.inds],main=main,xlab=xlab,ylab=ylab,colramp=colorRampPalette(c('white','blue','green','yellow','orange','red')))
                 if (class(res)=='Mclust') {
                     for (i in K) {
                         points(t(as.matrix(res$parameters$mean[dim.inds,i])),pch=20,col=i)
                         lines(ellipse(res$parameters$variance$sigma[dim.inds,dim.inds,i],centre=t(res$parameters$mean[dim.inds,i])),col=i,lwd=2,lty=1)
                     }
                 } else if (class(res)=='flowClust') {
+                    if(!is.null(before.res))
+                    for (i in K) {
+                        points(t(as.matrix(before.res@mu[i,dim.inds])),pch=20,col=i)
+                        mu <- before.res@mu[i,dim.inds]
+                        sigma <- before.res@sigma[i,dim.inds,dim.inds]
+                        lines(ellipse::ellipse(sigma,centre=mu),col=i,lwd=2,lty=2)
+                    }
                     for (i in K) {
                         points(t(as.matrix(res@mu[i,dim.inds])),pch=20,col=i)
                         mu <- res@mu[i,dim.inds]
@@ -616,6 +617,8 @@ plotClustRes <- function(x, res, outliers=TRUE, plot.file=NULL) {
                         lines(ellipse::ellipse(sigma,centre=mu),col=i,lwd=2,lty=1)
                     }
                 }
+            } else if (n > n2) {
+                plot(  NULL, xlim=range(x[,n2]), ylim=range(x[,n]), xaxt='n', yaxt='n', ann=FALSE, bty='n' )
             #diagonal contains univariate densities
             } else {
                 d <- normalised.density(x[,n])
@@ -629,10 +632,15 @@ plotClustRes <- function(x, res, outliers=TRUE, plot.file=NULL) {
                         cl <- which(clustering==i)
                         if (length(cl)>2) lines(normalised.density(x[cl,n]), col=i, lwd=2)
                     }
+                    if (!is.null(before.res))
+                    for (i in K) {
+                        cl <- which(before.clustering==i)
+                        if (length(cl)>2) lines(normalised.density(x[cl,n]), col=i, lwd=2, lty=2)
+                    }
                 }
             }
-            if (n==1) mtext(col.names[[n2]], side=3, cex=2, line=1) 
-            if (n2==1) mtext(col.names[[n]], side=2, cex=2, line=2)
+            if (n==1) mtext(col.names[[n2]], side=3, cex=cex, line=1) 
+            if (n2==1) mtext(col.names[[n]], side=2, cex=cex, line=2)
        }
     }
     if (!is.null(plot.file)) dev.off()
@@ -641,9 +649,6 @@ plotClustRes <- function(x, res, outliers=TRUE, plot.file=NULL) {
 
 ### density at each point for each flowClust component
 compute.dens <- function(d, res) sapply(1:res@K, function(i) res@w[i]*flowClust::dmvt(d, mu=res@mu[i,], sigma=res@sigma[i,,], nu=res@nu, lambda=res@lambda)$value)
-
-### density at each point for each mclust component
-compute.dens.mclust <- function(d, res) sapply(1:res@K, function(i) res@w[i]*flowClust::dmvt(d, mu=res@mu[i,], sigma=res@sigma[i,,], nu=res@nu, lambda=res@lambda)$value)
 
 ### outliers are points which follow below a given quantile of density
 outliers <- function(d, res, dens.threshold=.05) {
@@ -663,8 +668,9 @@ compute.post <- function(d, res) {
 
 ### return the component assignment
 MAP <- function(d, res, post.threshold=NULL) {
+    d <- d[,res@varNames]
     d <- box(d, res@lambda)
-    post <- compute.post(d,res)
+    print(head(post <- compute.post(d,res)))
     if (is.null(post.threshold))
         apply(post,1,which.max)
     else
@@ -672,12 +678,11 @@ MAP <- function(d, res, post.threshold=NULL) {
 }
 
 
-
 ###
 plotDensity <- function(x, k=NULL) {
 print( pairs(x, panel = function(x,y,...) {
-             X <- cbind(x,y)
-             #kde2D(X
+       X <- cbind(x,y)
+       #kde2D(X
        smoothScatter(x,y, ..., nrpoints = 0, add = TRUE)
        X <- cbind(x,y)
        if (!is.null(k)) {
@@ -746,7 +751,161 @@ dens <- function(x, bw=.1, n=512) {
 }
 
 
+filter.mahalanobis <- function(x, mu, sigma, p=.999) {
+    d <- mahalanobis(x,mu,sigma)
+    return(d<qchisq(p, df=length(mu)))
+}
+
+filter.mahalanobis.ellipse <- function(x, e, p=.999) {
+    d <- mahalanobis(x[,names(e$Mu)],e$Mu,e$Sigma)
+    return(d<qchisq(p, df=length(e$Mu)))
+}
+
+mahalanobis.magnetic.ellipse <- function(x, e, p=.999) {
+    #repeat 3 times
+    d <- mahalanobis(x[,names(e$Mu)],e$Mu,e$Sigma)
+    e$Mu <- colMeans(x[which(d<qchisq(p, df=length(e$Mu))),names(e$Mu)])
+    d <- mahalanobis(x[,names(e$Mu)],e$Mu,e$Sigma)
+    e$Mu <- colMeans(x[which(d<qchisq(p, df=length(e$Mu))),names(e$Mu)])
+    d <- mahalanobis(x[,names(e$Mu)],e$Mu,e$Sigma)
+    e$Mu <- colMeans(x[which(d<qchisq(p, df=length(e$Mu))),names(e$Mu)])
+    return(e)
+}
+
+kmeans.magnetic.ellipses <- function(x, ellipses) {
+    #repeat 3 times
+    (centers <- do.call('rbind', lapply(ellipses, function(e) e$Mu)))
+    res <- kmeans(x[,colnames(centers)], centers=centers)
+    for (i in 1:nrow(centers)) ellipses[[i]]$Mu <- res$centers[i,]
+    return(ellipses)
+}
 
 
+em.magnetic.ellipses <- function(x, gates, iterations=10, background=NULL) {
+    tau <- sapply(gates, function(x) x$tau)
+    for (j in 1:length(gates)) gates[[j]]$tau <- tau[[j]]/sum(tau)
+    if (!is.null(background)) gates[[length(gates)+1]] <- list(Mu=colMeans(x),Sigma=cov(x),tau=background)
+    for (i in 1:iterations) {
+        #u <- 1/mahalanobis(
+        dens <- sapply(gates, function(e) e$tau*mixtools::dmvnorm(x[,names(e$Mu)], mu=e$Mu, sigma=e$Sigma))
+        post <- t(apply(dens, 1, function(x) x/sum(x)))
+        for (j in 1:length(gates)) gates[[j]]$Mu <- apply(x[,names(gates[[j]]$Mu)], 2, weighted.mean, w=post[,j]) 
+        tau <- colSums(post)/sum(post)
+        for (j in 1:length(gates)) gates[[j]]$tau <- tau[[j]]
+    }
+    return(gates)
+}
+
+
+
+filter.mahalanobis.ellipses <- function(x, ellipses, p=.999) {
+    rowSums(sapply( ellipses, function(e) mahalanobis(x[,names(e$Mu)],e$Mu,e$Sigma)<qchisq(p, df=length(e$Mu))))==length(ellipses)
+}
+
+classification.to.ellipse <- function(fcs.data, clr) {
+    clr <- which(as.logical(clr))
+    d <- fcs.data[clr,]
+    return(list(Mu=colMeans(d), Sigma=cov(d), tau=nrow(d)/nrow(fcs.data)))
+}
+
+classification.to.gate <- function(fcs.data, clr) {
+    e <- classification.to.ellipse(fcs.data, clr)
+    return(which(filter.mahalanobis.ellipse(fcs.data, e)))
+}
+
+
+plot.ellipses <- function(gates, col='black') {
+    for (e in gates) lines(ellipse::ellipse(e$Sigma,centre=e$Mu),col=col,lwd=2,lty=2)
+    points(do.call('rbind', lapply(gates,function(x)x$Mu)), pch='X', cex=2, col=col)
+}
+
+
+plotManualGates <- function(fcs.data, clr)  {
+    ngates <- length(gatenames <- colnames(clr))
+    figure.labels <- iter(paste(letters,')',sep=''))
+    par(mfrow=c(round(sqrt(ngates)),round(sqrt(ngates))))
+    for (gn in gatenames) {
+        print(gn)
+        print(name <- unlist(strsplit(gn, '_'))[[1]])
+        print(channels <- unlist(strsplit(unlist(strsplit(gn, '_'))[[2]],'\\.')))
+        print(head(fcs.data[,channels]))
+        xquant <- quantile(fcs.data[,channels[[1]]],probs=seq(0,1,.01))
+        yquant <- quantile(fcs.data[,channels[[2]]],probs=seq(0,1,.01))
+        print(xlim <- c(xquant[['1%']],xquant[['99%']]))
+        print(ylim <- c(yquant[['1%']],yquant[['99%']]))
+        smoothScatter( fcs.data[,channels], xlab=channels[[1]], ylab=channels[[2]], main=name, colramp=colorRampPalette(c('white','blue','green','yellow','orange','red')), nrpoints=0, xlim=xlim, ylim=ylim)
+        X <- fcs.data[which(as.logical(clr[,gn])),channels]
+        p <- X[chull(X),]
+        p <- rbind(p, p)
+        #lines(p, col='red', lwd=2)
+        lines(ellipse::ellipse(cov(X),centre=colMeans(X)),col='red',lwd=2,lty=1)
+        title(nextElem(figure.labels), adj=0)
+    }
+}
+
+### TODO normalised.density plot
+smoothPlot1D <- function( fcs.data, outliers=FALSE, nrpoints=0, colramp=colorRampPalette(c('white','blue','green','yellow','orange','red')), ... ) {
+    xquant <- quantile(fcs.data,probs=c(0.01,0.99))
+    print(xlim <- c(xquant[['1%']],xquant[['99%']]))
+    if (!outliers)
+        if (length(fcs.data)>5000)
+            plot( normalised.density(fcs.data), cex.lab=2, cex.main=2, ylim=ylim, xlim=xlim, ... )
+        else
+            points( cbind(fcs.data,0), pch=20, ... )
+    else
+        if (nrow(fcs.data)>5000)
+            plot( fcs.data, colramp=colramp, nrpoints=nrpoints, cex.lab=2, cex.main=2, ... )
+        else
+            plot( fcs.data, col=densCols(fcs.data,colramp=colramp), pch=20, ... )
+}
+
+
+###
+smoothPlot <- function( fcs.data, outliers=FALSE, nrpoints=0, colramp=colorRampPalette(c('white','blue','green','yellow','orange','red')), ... ) {
+    xquant <- quantile(fcs.data[,1],probs=c(0.01,0.99))
+    yquant <- quantile(fcs.data[,2],probs=c(0.01,0.99))
+    print(xlim <- c(xquant[['1%']],xquant[['99%']]))
+    print(ylim <- c(yquant[['1%']],yquant[['99%']]))
+    if (!outliers)
+        if (nrow(fcs.data)>5000)
+            smoothScatter( fcs.data, colramp=colramp, nrpoints=nrpoints, cex.lab=2, cex.main=2, ylim=ylim, xlim=xlim, ... )
+        else
+            plot( fcs.data, col=densCols(fcs.data,colramp=colramp), pch=20, ... )
+    else
+        if (nrow(fcs.data)>5000)
+            smoothScatter( fcs.data, colramp=colramp, nrpoints=nrpoints, cex.lab=2, cex.main=2, ... )
+        else
+            plot( fcs.data, col=densCols(fcs.data,colramp=colramp), pch=20, ... )
+}
+
+###
+contourPlot <- function( fcs.data, bw=.1, outliers=FALSE, ... ) {
+    xquant <- quantile(fcs.data[,1],probs=c(0.01,0.99))
+    yquant <- quantile(fcs.data[,2],probs=c(0.01,0.99))
+    print(xlim <- c(xquant[['1%']],xquant[['99%']]))
+    print(ylim <- c(yquant[['1%']],yquant[['99%']]))
+    dens <- bkde2D(fcs.data[,1:2],bw)
+    if (!outliers)
+        if (nrow(fcs.data)>5000) {
+            contour(x=dens$x1, y=dens$x2, z=dens$fhat, cex.lab=2, cex.main=2, ylim=ylim, xlim=xlim, ... )
+        } else {
+            plot( fcs.data, pch=20,  ylim=ylim, xlim=xlim, ... )
+        }
+    else
+        if (nrow(fcs.data)>5000) {
+            contour(x=dens$x1, y=dens$x2, z=dens$fhat, cex.lab=2, cex.main=2, ... )
+        } else {
+            plot( fcs.data, col=densCols(fcs.data,colramp=colramp), pch=20, ... )
+        }
+}
+
+
+
+#baseline relative pSTAT5
+baseline.relative.pstat5 <- function(fcs.data) {
+    diff.pstat5 <- sapply(1:4, function(i) fcs.data[,paste('PSTAT5',i,sep='.')]-fcs.data[,'PSTAT5.1'])
+    colnames(diff.pstat5) <- paste('diff','PSTAT5',1:4,sep='.')
+    return(cbind(fcs.data,diff.pstat5))
+}
 
 
