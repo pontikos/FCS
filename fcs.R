@@ -42,9 +42,15 @@ colMax <- function(x) apply(x,2,max)
 colQuantile <- function(x,prob) apply(x,2,quantile,prob)
 
 ###
+plot.normalised.density <- function(d, include=c(0.1,.9), ...) {
+    plot(d, xlim=quantile(d$x,probs=include), ...)
+}
+
+###
 normalised.density <- function(x, ...) {
     d <- density(x, ...)
     d$y <- d$y/sum(d$y)
+    class(d) <- 'normalised.density'
     return(d)
 }
 
@@ -935,20 +941,14 @@ plotManualGates <- function(fcs.data, clr)  {
     }
 }
 
-### TODO normalised.density plot
-smoothPlot1D <- function( fcs.data, outliers=FALSE, nrpoints=0, colramp=colorRampPalette(c('white','blue','green','yellow','orange','red')), ... ) {
-    xquant <- quantile(fcs.data,probs=c(0.01,0.99))
+### normalised.density plot
+smoothPlot1D <- function( x, outliers=FALSE, ... ) {
+    xquant <- quantile(x,probs=c(0.01,0.99))
     print(xlim <- c(xquant[['1%']],xquant[['99%']]))
     if (!outliers)
-        if (length(fcs.data)>5000)
-            plot( normalised.density(fcs.data), cex.lab=2, cex.main=2, ylim=ylim, xlim=xlim, ... )
-        else
-            points( cbind(fcs.data,0), pch=20, ... )
+        plot( normalised.density(x), cex.lab=2, cex.main=2, xlim=xlim, ... )
     else
-        if (nrow(fcs.data)>5000)
-            plot( fcs.data, colramp=colramp, nrpoints=nrpoints, cex.lab=2, cex.main=2, ... )
-        else
-            plot( fcs.data, col=densCols(fcs.data,colramp=colramp), pch=20, ... )
+        plot( normalised.density(x), cex.lab=2, cex.main=2, ... )
 }
 
 
