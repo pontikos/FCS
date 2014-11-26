@@ -1,3 +1,5 @@
+suppressPackageStartupMessages(library(sp))
+suppressPackageStartupMessages(library(cluster))
 suppressPackageStartupMessages(library(KernSmooth))
 suppressPackageStartupMessages(library(iterators))
 suppressPackageStartupMessages(library(scales))
@@ -9,40 +11,81 @@ suppressPackageStartupMessages(library(ellipse))
 suppressPackageStartupMessages(library(mvtnorm))
 suppressPackageStartupMessages(library(tools))
 suppressPackageStartupMessages(library(mixtools))
+suppressPackageStartupMessages(library(R.utils))
+suppressPackageStartupMessages(library(flowClust))
 
-#set w=0 is important to avoid spurious peaks close to zero
-lgcl <- logicleTransform(w=0.1)
+
+applyTransforms <- function(x, transforms) {
+    n <- 1
+    transforms <- transforms[colnames(x)]
+    apply(x, 2, function(y) {
+             y <- transforms[[n]](y)
+             n <<- n+1
+             return(y)
+            })
+}
+
+
+
+trans <- function(x, m=4.5) {
+    cbind(x[,grep('^SSC|^FSC',colnames(x))], apply(x[,grep('^SSC|^FSC',colnames(x),invert=TRUE)], 2,
+                                function(y) {
+                                    r <- log10(max(y)/abs(min(y)))
+                                    w <- (m-r)/2
+                                    logicleTransform(w=)(y)
+                                }))
+}
 
 colMedians <- function(x) apply(x,2,median)
+colMin <- function(x) apply(x,2,min)
+colMax <- function(x) apply(x,2,max)
+colQuantile <- function(x,prob) apply(x,2,quantile,prob)
 
 ###
-normalised.density <- function(x) {
-    d <- density(x)
+normalised.density <- function(x, ...) {
+    d <- density(x, ...)
     d$y <- d$y/sum(d$y)
     return(d)
 }
 
-# 
+# flowClust::box
 box <- function (data, lambda) {
     if (length(lambda) > 1 || lambda == 1) return(data)
     else if (length(lambda) > 1 || lambda != 0) return((sign(data) * abs(data)^lambda - 1)/lambda)
     else if (is.na(lambda) || is.null(lambda)) return(data)
     else return(log(data))
 }
+#reassignInPackage('box', pkgName='flowClust', rbox)
 
 # to perform reverse box-cox transformation (multivariate)
+# flowClust::rbox
 rbox <- function (data, lambda) 
 {
     if (length(lambda) > 1 || lambda == 1) return(data)
     else if (length(lambda) > 1 || lambda != 0) return(sign(lambda * data + 1) * (sign(lambda * data + 1) * (lambda * data + 1))^(1/lambda))
     else if (is.na(lambda) || is.null(lambda)) return(data)
     else return(exp(data))
-}
+} 
+#reassignInPackage('rbox', pkgName='flowClust', rbox)
 
 
 prior.flowClust <- function(d, prior.res, B=500, level=.9, u.cutoff=.5, post.threshold=.99, kappa=1) {
     prior <- flowClust2Prior(prior.res,kappa=kappa) 
     return(flowClust::flowClust(d,K=prior.res@K,B=B,usePrior='yes',prior=prior,level=level,u.cutoff=u.cutoff,trans=0,lambda=1,control=list(B.lambda=0)))
+}
+
+# findInterval returns -1 if before; 1 if within range; 2 if greater
+in.range <- function(x, interval, all.inside=TRUE, ...) findInterval(x, interval, all.inside, ...)==1
+
+#`%in%` <- function(x, r) in.range(x,r)
+
+#
+percentile.filter <- function(fcs.data, bottom=.01, top=.99) {
+    f <- function(x) in.range(x, quantile(x, probs=c(bottom,top)))
+    if(is.null(ncol(fcs.data)))
+        f(fcs.data)
+    else 
+        apply( apply( fcs.data, 2, f), 1, all )
 }
 
 fcs3.filter <- function(fcs) {
@@ -497,46 +540,74 @@ pairs.smoothScatter <- function(x,hdr=FALSE) print( pairs(x, lower.panel=NULL, u
                                                
 
 ###
-plotClusters <- function(x, plot.points=NULL, plot.file=NULL, classification=NULL, posteriors=NULL, posterior.cutoff=.95, outliers=FALSE, ellipses=TRUE, chulls=TRUE, chull.lwd=.5, MIRROR=FALSE) {
+### Can draw the convex hull or the ellipse (based on the cluster covariance) for a cluster.
+plotClusters <- function(x, plot.points=NULL, plot.points.col='black', plot.points.pch=20, plot.file=NULL, classification=NULL, posteriors=NULL, posterior.cutoff=.95, outliers=FALSE, ellipses=TRUE, clusters.col=NULL, chulls=TRUE, chull.lwd=.5, upper=smoothPlot, lower=NULL, PAR=TRUE, ...) {
     col.names <- colnames(x)
     nc <- ncol(x)
     cat('>>',plot.file,'\n')
     if (!is.null(plot.file)) png(plot.file)
-    par(mfrow = c(nc, nc), mai=c(.2,.2,.2,.2), oma=c(2,3,2,.5))
+    if (PAR) par(mfrow = c(nc, nc), mai=c(.2,.2,.2,.2), oma=c(2,3,2,.5))
+    # plots the clusters either as chulls or as ellipses
+    f <- function(dim.inds) {
+           if(is.null(classification)) cols <- 'black' else cols <- classification
+           if (!is.null(plot.points)) points(plot.points[,col.names[dim.inds]], col=plot.points.col, pch=plot.points.pch)
+           if (!is.null(classification))
+           for (k in sort(unique(classification))) {
+               if (is.null(clusters.col)) col <- k
+               else col <- clusters.col[[k]]
+               X1 <- x[which(classification==k),dim.inds]
+               if (chulls) {
+                   p <- X1[chull(X1),]
+                   p <- rbind(p, p)
+                   lines(p, col=col, lwd=chull.lwd)
+               }
+               #also approximate with an ellipse
+               if (ellipses) lines(ellipse::ellipse(cov(X1),centre=colMeans(X1)),col=col,lwd=2,lty=1)
+           } 
+           if (!is.null(posteriors))
+           for (k in 1:ncol(posteriors)) {
+               if (is.null(clusters.col)) col <- k
+               else col <- clusters.col[[k]]
+               i <- which(posteriors[,k]>posterior.cutoff)
+               if (length(i)>2) {
+                   X1 <- x[i,dim.inds]
+                   if (chulls) {
+                       #make sure chull is not open
+                       ch <- c(chull(X1),chull(X1))
+                       p <- X1[ch,]
+                       lines(p, col=col, lwd=chull.lwd)
+                   }
+                   #also approximate with an ellipse
+                   if (ellipses) lines(ellipse::ellipse(cov(X1),centre=colMeans(X1)),col=col,lwd=2,lty=1)
+               }
+           } 
+    }
     for (n in 1:length(col.names)) {
             ylab <- ''
             xlab <- ''
             main <- ''
         for (n2 in 1:length(col.names)) {
-            #off-diagonal terms containing bivariate densities
-            if ( (n < n2) || ((n > n2)&&MIRROR) ) {
-               dim.inds <- c(n2,n)
-               smoothPlot(x[,dim.inds],main=main,xlab=xlab,ylab=ylab, outliers=outliers)
-               if (!is.null(plot.points)) points(plot.points[,col.names[dim.inds]], col='black', pch=20)
-               if (!is.null(classification))
-               for (k in sort(unique(classification))) {
-                   X1 <- x[which(classification==k),dim.inds]
-                   p <- X1[chull(X1),]
-                   p <- rbind(p, p)
-                   lines(p, col=k, lwd=chull.lwd)
-                   #also approximate with an ellipse
-                   if (ellipses) lines(ellipse::ellipse(cov(X1),centre=colMeans(X1)),col=k,lwd=2,lty=1)
-               } 
-               if (!is.null(posteriors))
-               for (k in 1:ncol(posteriors)) {
-                   i <- which(posteriors[,k]>posterior.cutoff)
-                   if (length(i)>2) {
-                       X1 <- x[i,dim.inds]
-                       #make sure chull is not open
-                       ch <- c(chull(X1),chull(X1))
-                       p <- X1[ch,]
-                       lines(p, col=k, lwd=chull.lwd)
-                       #also approximate with an ellipse
-                       if (ellipses) lines(ellipse::ellipse(cov(X1),centre=colMeans(X1)),col=k,lwd=2,lty=1)
-                   }
-               } 
+            dim.inds <- c(n2,n)
+            #upper diagonal terms containing bivariate densities
+            if ( n < n2 ) {
+               if (is.null(upper)) {
+                   frame()
+               } else {
+                   upper(x[,dim.inds],main=main,xlab=xlab,ylab=ylab, outliers=outliers, classification=classification, ellipses=ellipses, clusters.col=clusters.col, chulls=chulls, ...)
+                   f(dim.inds)
+               }
+            #lower diagonal terms containing bivariate densities
+            } else if ( n > n2 ) {
+                if (is.null(lower)) {
+                    frame()
+                } else {
+                   lower(x[,dim.inds],main=main,xlab=xlab,ylab=ylab, outliers=outliers,  clusters.col=clusters.col, ...)
+                   f(dim.inds)
+                }
             #diagonal contains univariate densities
-            } else if (n == n2) {
+            # } else if (n == n2) {
+            } else {
+               #diagonal(x[,n])
                q1 <- quantile(x[,n],probs=c(0.01,0.99))
                d <- normalised.density(x[,n])
                if (!outliers)
@@ -546,22 +617,24 @@ plotClusters <- function(x, plot.points=NULL, plot.file=NULL, classification=NUL
                if (!is.null(classification))
                for (k in sort(unique(classification))) {
                    X1 <- x[which(classification==k),n]
-                   if (length(X1)>2) lines(normalised.density(X1), col=k, lwd=2)
+                   if (length(X1)>10) lines(normalised.density(X1), col=k, lwd=2)
+                   else points(cbind(X1,0), col=k, pch=20)
                } 
                if (!is.null(posteriors))
                for (k in 1:ncol(posteriors)) {
                    X1 <- x[posteriors[,k]>posterior.cutoff,n]
-                   if (length(X1)>2) lines(normalised.density(X1), col=k, lwd=2)
+                   if (is.null(clusters.col)) col <- k
+                   else col <- clusters.col[k]
+                   if (length(X1)>10) lines(normalised.density(X1), col=col, lwd=2)
+                   else points(cbind(X1,0), col=col, pch=20)
                } 
-            } else {
-                frame()
             }
             if (n==1) mtext(col.names[[n2]], side=3, cex=2, line=1) 
             if (n2==1) mtext(col.names[[n]], side=2, cex=2, line=2)
        }
     }
     if (!is.null(plot.file)) dev.off()
-    par(mfrow=c(1,1))
+    if (PAR) par(mfrow=c(1,1))
 }
 
 ### Supports flowClust and Mclust res.
@@ -600,7 +673,7 @@ plotClustRes <- function(x, res, before.res=NULL, outliers=TRUE, plot.file=NULL,
                 if (class(res)=='Mclust') {
                     for (i in K) {
                         points(t(as.matrix(res$parameters$mean[dim.inds,i])),pch=20,col=i)
-                        lines(ellipse(res$parameters$variance$sigma[dim.inds,dim.inds,i],centre=t(res$parameters$mean[dim.inds,i])),col=i,lwd=2,lty=1)
+                        lines(ellipse::ellipse(res$parameters$variance$sigma[dim.inds,dim.inds,i],centre=t(res$parameters$mean[dim.inds,i])),col=i,lwd=2,lty=1)
                     }
                 } else if (class(res)=='flowClust') {
                     if(!is.null(before.res))
@@ -678,27 +751,6 @@ MAP <- function(d, res, post.threshold=NULL) {
 }
 
 
-###
-plotDensity <- function(x, k=NULL) {
-print( pairs(x, panel = function(x,y,...) {
-       X <- cbind(x,y)
-       #kde2D(X
-       smoothScatter(x,y, ..., nrpoints = 0, add = TRUE)
-       X <- cbind(x,y)
-       if (!is.null(k)) {
-           for (i in 1:max(k)){
-               X1 <- X[k==i,]
-               p <- X1[chull(X1),]
-               p <- c(p, p[[1]])
-               lines(p, col=i)
-            }
-       }
-       #points(X, col=k, pch='.')
-      }))
-}
-
-
-#dens <- apply(t(combn(colnames(x),2)), 1, function(y) kde2D(x[,y]))
 
 dens <- function(x,bw) {
     o<-apply(x,2,order)
@@ -762,7 +814,7 @@ filter.mahalanobis.ellipse <- function(x, e, p=.999) {
 }
 
 mahalanobis.magnetic.ellipse <- function(x, e, p=.999) {
-    #repeat 3 times
+    #Mu is updated 3 times
     d <- mahalanobis(x[,names(e$Mu)],e$Mu,e$Sigma)
     e$Mu <- colMeans(x[which(d<qchisq(p, df=length(e$Mu))),names(e$Mu)])
     d <- mahalanobis(x[,names(e$Mu)],e$Mu,e$Sigma)
@@ -802,11 +854,32 @@ filter.mahalanobis.ellipses <- function(x, ellipses, p=.999) {
     rowSums(sapply( ellipses, function(e) mahalanobis(x[,names(e$Mu)],e$Mu,e$Sigma)<qchisq(p, df=length(e$Mu))))==length(ellipses)
 }
 
+#fcs.data needs to be 2D
+classification.to.chull <- function(fcs.data, clr) {
+    clr <- which(as.logical(clr))
+    d <- fcs.data[clr,]
+    return(d[chull(d),])
+}
+
 classification.to.ellipse <- function(fcs.data, clr) {
     clr <- which(as.logical(clr))
     d <- fcs.data[clr,]
     return(list(Mu=colMeans(d), Sigma=cov(d), tau=nrow(d)/nrow(fcs.data)))
 }
+
+points.in.ellipse <- function(X, w, npoints=255, alpha=.05) {
+    e <- classification.to.ellipse( X, w )
+    mu <- e$Mu
+    sigma <- e$Sigma
+    es <- eigen(sigma)
+    e1 <- es$vec %*% diag(sqrt(es$val))
+    r1 <- sqrt(qchisq(1 - alpha, 2))
+    theta <- seq(0, 2 * pi, len = npoints)
+    v1 <- cbind(r1 * cos(theta), r1 * sin(theta))
+    pts = t(mu - (e1 %*% t(v1)))
+    point.in.polygon(X[,1],X[,2],pts[,1],pts[,2])
+}
+
 
 classification.to.gate <- function(fcs.data, clr) {
     e <- classification.to.ellipse(fcs.data, clr)
@@ -820,6 +893,25 @@ plot.ellipses <- function(gates, col='black') {
 }
 
 
+plot.gate.chull <- function(X, classification) {
+    for (k in sort(unique(classification))) {
+         X1 <- X[which(classification==k),]
+         p <- X1[chull(X1),]
+         p <- rbind(p, p)
+         lines(p, col=k)
+    } 
+}
+
+#also approximate with an ellipse
+plot.gate.ellipse <- function(X, classification) {
+    for (k in sort(unique(classification))) {
+         X1 <- X[which(classification==k),]
+         lines(ellipse::ellipse(cov(X1),centre=colMeans(X1)),col=k,lwd=2,lty=1)
+    } 
+}
+
+
+### TODO
 plotManualGates <- function(fcs.data, clr)  {
     ngates <- length(gatenames <- colnames(clr))
     figure.labels <- iter(paste(letters,')',sep=''))
@@ -861,21 +953,67 @@ smoothPlot1D <- function( fcs.data, outliers=FALSE, nrpoints=0, colramp=colorRam
 
 
 ###
-smoothPlot <- function( fcs.data, outliers=FALSE, nrpoints=0, colramp=colorRampPalette(c('white','blue','green','yellow','orange','red')), ... ) {
+smoothPlot <- function( fcs.data, nrpoints=0, colramp=colorRampPalette(c('white','blue','green','yellow','orange','red')), plot.points=NULL, plot.points.col='black', plot.file=NULL, classification=NULL, posteriors=NULL, posterior.cutoff=.95, outliers=FALSE, ellipses=TRUE, clusters.col=NULL, chulls=TRUE, chull.lwd=.5,  ... ) {
     xquant <- quantile(fcs.data[,1],probs=c(0.01,0.99))
     yquant <- quantile(fcs.data[,2],probs=c(0.01,0.99))
     print(xlim <- c(xquant[['1%']],xquant[['99%']]))
     print(ylim <- c(yquant[['1%']],yquant[['99%']]))
-    if (!outliers)
-        if (nrow(fcs.data)>5000)
+    if (!outliers) {
+        if (nrow(fcs.data)>5000) {
             smoothScatter( fcs.data, colramp=colramp, nrpoints=nrpoints, cex.lab=2, cex.main=2, ylim=ylim, xlim=xlim, ... )
-        else
-            plot( fcs.data, col=densCols(fcs.data,colramp=colramp), pch=20, ... )
-    else
-        if (nrow(fcs.data)>5000)
+        } else {
+            #plot( fcs.data, col=densCols(fcs.data,colramp=colramp), pch=20, ... )
+            if (is.null(classification))
+                plot( fcs.data, col='black', pch=20, ... )
+            else
+                #plot( fcs.data, col=densCols(fcs.data,colramp=colramp), pch=20, ... )
+                plot( fcs.data, col=classification, pch=20, ... )
+        }
+    } else {
+        if (nrow(fcs.data)>5000) {
             smoothScatter( fcs.data, colramp=colramp, nrpoints=nrpoints, cex.lab=2, cex.main=2, ... )
-        else
-            plot( fcs.data, col=densCols(fcs.data,colramp=colramp), pch=20, ... )
+        } else {
+            if (is.null(classification))
+                plot( fcs.data, col='black', pch=20, ... )
+            else
+                #plot( fcs.data, col=densCols(fcs.data,colramp=colramp), pch=20, ... )
+                plot( fcs.data, col=classification, pch=20, ... )
+        }
+    }
+    col.names <- colnames(fcs.data)
+    # plots the clusters either as chulls or as ellipses
+    if(is.null(classification)) cols <- 'black' else cols <- classification
+    if (!is.null(plot.points)) points(plot.points[,], col=plot.points.col, pch=20)
+    if (!is.null(classification))
+    for (k in sort(unique(classification))) {
+        if (is.null(clusters.col)) col <- k
+        else col <- clusters.col[[k]]
+         X1 <- fcs.data[which(classification==k),col.names]
+             if (chulls) {
+                p <- X1[chull(X1),]
+                p <- rbind(p, p)
+                lines(p, col=col, lwd=chull.lwd)
+             }
+         #also approximate with an ellipse
+         if (ellipses) lines(ellipse::ellipse(cov(X1),centre=colMeans(X1)),col=col,lwd=2,lty=1)
+    } 
+    if (!is.null(posteriors))
+     for (k in 1:ncol(posteriors)) {
+        if (is.null(clusters.col)) col <- k
+        else col <- clusters.col[[k]]
+        i <- which(posteriors[,k]>posterior.cutoff)
+        if (length(i)>2) {
+           X1 <- fcs.data[i,col.names]
+           if (chulls) {
+              #make sure chull is not open
+              ch <- c(chull(X1),chull(X1))
+              p <- X1[ch,]
+              lines(p, col=col, lwd=chull.lwd)
+           }
+           #also approximate with an ellipse
+           if (ellipses) lines(ellipse::ellipse(cov(X1),centre=colMeans(X1)),col=col,lwd=2,lty=1)
+          }
+     }
 }
 
 ###
@@ -895,17 +1033,45 @@ contourPlot <- function( fcs.data, bw=.1, outliers=FALSE, ... ) {
         if (nrow(fcs.data)>5000) {
             contour(x=dens$x1, y=dens$x2, z=dens$fhat, cex.lab=2, cex.main=2, ... )
         } else {
-            plot( fcs.data, col=densCols(fcs.data,colramp=colramp), pch=20, ... )
+            plot( fcs.data, pch=20, ... )
         }
 }
 
 
 
 #baseline relative pSTAT5
-baseline.relative.pstat5 <- function(fcs.data) {
-    diff.pstat5 <- sapply(1:4, function(i) fcs.data[,paste('PSTAT5',i,sep='.')]-fcs.data[,'PSTAT5.1'])
-    colnames(diff.pstat5) <- paste('diff','PSTAT5',1:4,sep='.')
-    return(cbind(fcs.data,diff.pstat5))
+baseline.relative.pstat5 <- function(fcs.data, REPLACE=FALSE) {
+    n <- as.numeric(sapply(strsplit(grep('^PSTAT5.',colnames(fcs.data),value=TRUE),'\\.'),`[[`,2))
+    diff.pstat5 <- sapply(n, function(i) fcs.data[,paste('PSTAT5',i,sep='.')]/fcs.data[,'PSTAT5.1'])
+    if (REPLACE) {
+        colnames(diff.pstat5) <- paste('PSTAT5',n,sep='.')
+        return(cbind(fcs.data[,-grep('PSTAT5',colnames(fcs.data))],diff.pstat5))
+    } else {
+        colnames(diff.pstat5) <- paste('diff','PSTAT5',n,sep='.')
+        return(cbind(fcs.data,diff.pstat5))
+    }
 }
 
+
+#baseline relative pSTAT5
+baseline.relative.pstat5 <- function(fcs.data, REPLACE=FALSE) {
+    n <- as.numeric(sapply(strsplit(grep('^PSTAT5.',colnames(fcs.data),value=TRUE),'\\.'),`[[`,2))
+    diff.pstat5 <- sapply(n, function(i) fcs.data[,paste('PSTAT5',i,sep='.')]-fcs.data[,'PSTAT5.1'])
+    if (REPLACE) {
+        colnames(diff.pstat5) <- paste('PSTAT5',n,sep='.')
+        return(cbind(fcs.data[,-grep('PSTAT5',colnames(fcs.data))],diff.pstat5))
+    } else {
+        colnames(diff.pstat5) <- paste('diff','PSTAT5',n,sep='.')
+        return(cbind(fcs.data,diff.pstat5))
+    }
+}
+
+
+
+otsu <- function(x) {
+    #x <- sort(x)
+    m1 <- cumsum(x[-length(x)])/(1:(length(x)-1))
+    m2 <- (sum(x)-cumsum(x))[-length(x)]/((length(x)-1):1)
+    return((1:(length(x)-1)/length(x))*((length(x)-1):1/length(x))*(m1 - m2)**2)
+}
 
