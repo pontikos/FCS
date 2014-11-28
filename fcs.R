@@ -543,11 +543,29 @@ pairs.smoothScatter <- function(x,hdr=FALSE) print( pairs(x, lower.panel=NULL, u
 
 
 #pairs.featureSignif <- function(x) print( pairs(x, panel = function(x,y,...) { par(new=TRUE); plot(featureSignif(cbind(x,y))); }) )
+
+
+###
+plotClusters1D <- function(x, classification=NULL, fun=normalised.density) {
+   plot(fun(x))
+   if (!is.null(classification))
+   for (k in sort(unique(classification))) {
+       X1 <- x[which(classification==k)]
+       if (length(X1)>10) lines(fun(X1), col=k, lwd=2)
+       else points(cbind(X1,0), col=k, pch=20)
+   } 
+}
+
                                                
 
 ###
 ### Can draw the convex hull or the ellipse (based on the cluster covariance) for a cluster.
 plotClusters <- function(x, plot.points=NULL, plot.points.col='black', plot.points.pch=20, plot.file=NULL, classification=NULL, posteriors=NULL, posterior.cutoff=.95, outliers=FALSE, ellipses=TRUE, clusters.col=NULL, chulls=TRUE, chull.lwd=.5, upper=smoothPlot, lower=NULL, PAR=TRUE, ...) {
+    if (class(x)=='numeric') {
+        par(mfrow=c(1,1))
+        plotClusters1D(x, classification, ...)
+        return(NULL)
+    }
     col.names <- colnames(x)
     nc <- ncol(x)
     cat('>>',plot.file,'\n')
