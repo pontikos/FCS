@@ -43,7 +43,8 @@ colQuantile <- function(x,prob) apply(x,2,quantile,prob)
 
 ###
 plot.normalised.density <- function(d, include=c(0.1,.9), ...) {
-    plot(d, xlim=quantile(d$x,probs=include), ...)
+    class(d) <- 'density'
+    graphics::plot(d, xlim=quantile(d$x,probs=include), ...)
 }
 
 ###
@@ -546,8 +547,8 @@ pairs.smoothScatter <- function(x,hdr=FALSE) print( pairs(x, lower.panel=NULL, u
 
 
 ###
-plotClusters1D <- function(x, classification=NULL, fun=normalised.density) {
-   plot(fun(x))
+plotClusters1D <- function(x, classification=NULL, fun=normalised.density, ...) {
+   plot(fun(x), ...)
    if (!is.null(classification))
    for (k in sort(unique(classification))) {
        X1 <- x[which(classification==k)]
