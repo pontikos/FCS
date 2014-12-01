@@ -36,15 +36,27 @@ trans <- function(x, m=4.5) {
                                 }))
 }
 
+# Putting scatter on the same scale as fluorescence,
+# since recursive partitioning uses variance and range to
+# select markers.
+#if (RECT) rect(xleft=min(X[,1]),ybottom=min(X[,2]),xright=max(X[,1]),ytop=max(X[,2]),lwd=2)
+transform.scatter <- function(fcs.data) {
+    trans <- function(x) 10*(x-min(x))/(max(x)-min(x))
+    fcs.data[,'FSCA'] <- trans(fcs.data[,'FSCA'])
+    fcs.data[,'SSCA'] <- trans(fcs.data[,'SSCA']) 
+    return(fcs.data)
+}
+
+
 colMedians <- function(x) apply(x,2,median)
 colMin <- function(x) apply(x,2,min)
 colMax <- function(x) apply(x,2,max)
 colQuantile <- function(x,prob) apply(x,2,quantile,prob)
 
 ###
-plot.normalised.density <- function(d, include=c(0.1,.9), ...) {
+plot.normalised.density <- function(d,  ...) {
     class(d) <- 'density'
-    graphics::plot(d, xlim=quantile(d$x,probs=include), ...)
+    graphics::plot(d, ...)
 }
 
 ###
