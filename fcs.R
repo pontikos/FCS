@@ -87,6 +87,10 @@ rbox <- function (data, lambda)
 } 
 #reassignInPackage('rbox', pkgName='flowClust', rbox)
 
+flowclust <- function(d, K, B=500, level=.9, u.cutoff=.5, post.threshold=.99) 
+    flowClust::flowClust(d,K=K,B=B,level=level,u.cutoff=u.cutoff,trans=0,lambda=1,control=list(B.lambda=0))
+
+mixclust <- function(d,G,sub) mclust::Mclust(d,G=G,initialization=list(subset=sub), modelNames=c('VVV'))
 
 prior.flowClust <- function(d, prior.res, B=500, level=.9, u.cutoff=.5, post.threshold=.99, kappa=1) {
     prior <- flowClust2Prior(prior.res,kappa=kappa) 
@@ -984,7 +988,7 @@ smoothPlot1D <- function( x, outliers=FALSE, ... ) {
 
 
 ###
-smoothPlot <- function( fcs.data, nrpoints=0, colramp=colorRampPalette(c('white','blue','green','yellow','orange','red')), plot.points=NULL, plot.points.col='black', plot.file=NULL, classification=NULL, posteriors=NULL, posterior.cutoff=.95, outliers=FALSE, ellipses=TRUE, clusters.col=NULL, chulls=TRUE, chull.lwd=.5,  ... ) {
+smoothPlot <- function( fcs.data, nrpoints=0, colramp=colorRampPalette(c('white','blue','green','yellow','orange','red')), plot.points=NULL, plot.points.col='black', plot.file=NULL, classification=NULL, posteriors=NULL, posterior.cutoff=.95, outliers=FALSE, ellipses=TRUE, clusters.col=NULL, chulls=TRUE, chull.lwd=.5,  ellipse.lwd=2, ... ) {
     xquant <- quantile(fcs.data[,1],probs=c(0.01,0.99))
     yquant <- quantile(fcs.data[,2],probs=c(0.01,0.99))
     print(xlim <- c(xquant[['1%']],xquant[['99%']]))
@@ -1026,7 +1030,7 @@ smoothPlot <- function( fcs.data, nrpoints=0, colramp=colorRampPalette(c('white'
                 lines(p, col=col, lwd=chull.lwd)
              }
          #also approximate with an ellipse
-         if (ellipses) lines(ellipse::ellipse(cov(X1),centre=colMeans(X1)),col=col,lwd=2,lty=1)
+         if (ellipses) lines(ellipse::ellipse(cov(X1),centre=colMeans(X1)),col=col,lwd=ellipse.lwd,lty=1)
     } 
     if (!is.null(posteriors))
      for (k in 1:ncol(posteriors)) {
@@ -1042,7 +1046,7 @@ smoothPlot <- function( fcs.data, nrpoints=0, colramp=colorRampPalette(c('white'
               lines(p, col=col, lwd=chull.lwd)
            }
            #also approximate with an ellipse
-           if (ellipses) lines(ellipse::ellipse(cov(X1),centre=colMeans(X1)),col=col,lwd=2,lty=1)
+           if (ellipses) lines(ellipse::ellipse(cov(X1),centre=colMeans(X1)),col=col,lwd=ellipse.lwd,lty=1)
           }
      }
 }
