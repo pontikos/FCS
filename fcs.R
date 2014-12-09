@@ -977,13 +977,29 @@ plotManualGates <- function(fcs.data, clr)  {
 }
 
 ### normalised.density plot
-smoothPlot1D <- function( x, outliers=FALSE, ... ) {
-    xquant <- quantile(x,probs=c(0.01,0.99))
-    print(xlim <- c(xquant[['1%']],xquant[['99%']]))
-    if (!outliers)
-        plot( normalised.density(x), cex.lab=2, cex.main=2, xlim=xlim, ... )
-    else
-        plot( normalised.density(x), cex.lab=2, cex.main=2, ... )
+smoothPlot1D <- function( x, nrpoints=0, colramp=colorRampPalette(c('white','blue','green','yellow','orange','red')), plot.points=NULL, plot.points.col='black', plot.file=NULL, classification=NULL, posteriors=NULL, posterior.cutoff=.95, outliers=FALSE, main='', xlab='', ylab='', clusters.col=NULL, ... ) {
+   xquant <- quantile(x,probs=c(0.01,0.99))
+   print(xlim <- c(xquant[['1%']],xquant[['99%']]))
+   q1 <- quantile(x,probs=c(0.01,0.99))
+   d <- normalised.density(x)
+   if (!outliers)
+       plot(d,main=main,xlab=xlab,ylab=ylab,xlim=c(q1[['1%']],q1[['99%']]))
+   else
+       plot(d,main=main,xlab=xlab,ylab=ylab)
+   if (!is.null(classification))
+   for (k in sort(unique(classification))) {
+       X1 <- x[which(classification==k)]
+       if (length(X1)>10) lines(normalised.density(X1), col=k, lwd=2)
+       else points(cbind(X1,0), col=k, pch=20)
+   } 
+   if (!is.null(posteriors))
+   for (k in 1:ncol(posteriors)) {
+       X1 <- x[posteriors[,k]>posterior.cutoff]
+       if (is.null(clusters.col)) col <- k
+       else col <- clusters.col[k]
+       if (length(X1)>10) lines(normalised.density(X1), col=col, lwd=2)
+       else points(cbind(X1,0), col=col, pch=20)
+   } 
 }
 
 
