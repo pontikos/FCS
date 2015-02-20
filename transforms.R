@@ -28,18 +28,9 @@ applyTransforms.slow <- function(x, transforms) {
             })
 }
 
-applyTransforms <- function(x, transforms) {
-    n <- 1
-    transforms <- transforms[colnames(x)]
-    apply(x, 2, function(y) {
-             y <- transforms[[n]](y)
-             n <<- n+1
-             return(y)
-            })
-}
-
-
 load( '~nikolas/dunwich/Projects/IL2/PSTAT5-CD25-CD45RA-CD4-FOXP3/pstat5-join/All/CB00366X_2012-11-07.RData' )
+
+
 transforms <- estimateTransforms(fcs.data)
 transforms[['FOXP3']] <- logicleTransform(w=1)
 transforms[['CD45RA']] <- logicleTransform(w=.5)
@@ -47,8 +38,14 @@ transforms[['CD25']] <- logicleTransform(w=.6)
 transforms[['PSTAT5.1']] <- logicleTransform(w=.5)
 transforms[grep('PSTAT5',names(transforms))] <- transforms['PSTAT5.1'] 
 transforms[['PSTAT5']] <- transforms[['PSTAT5.1']]
-fcs.data <- applyTransforms(fcs.data, transforms) 
 save(transforms, file='~nikolas/dunwich/Projects/IL2/PSTAT5-CD25-CD45RA-CD4-FOXP3/transforms.RData')
+
+
+# all transforms have zero set to one
+transforms <- estimateTransforms(fcs.data)
+transforms <- lapply(transforms, function(x) logicleTransform(w=1))
+transforms[['PSTAT5']] <- transforms[['PSTAT5.1']]
+save(transforms, file='~nikolas/dunwich/Projects/IL2/PSTAT5-CD25-CD45RA-CD4-FOXP3/transform-w1.RData')
 
 
 

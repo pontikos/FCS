@@ -143,68 +143,77 @@ fcs.filter <- function(fcs) {
 # (this needs to be a parameter)
 # 
 # Returns
-read.FCS <- function(file, EXPRS=TRUE, FILTER=FALSE, channels=c(), COMP=TRUE, verbose=FALSE, TRANS=logicleTransform(w=0.1), ...) {
-	if (verbose) fcs <- flowCore::read.FCS(file, ...)
-	else fcs <- suppressWarnings(flowCore::read.FCS(file, ...))
-    params <- fcs@parameters
-    pd <- pData(params)
-    # Replace any null descs with names (for FSC-A, FSC-W, SSC-A)
-    bad_col <- grep("^[a-zA-Z0-9]+",pd$desc,invert=TRUE)
-	if (length(bad_col) > 0) {
-		keyval <- keyword(fcs)
-		for (i in bad_col) {
-			pd$desc[i] <- pd$name[i]
-			keyval[[paste("$P",i,"S",sep="")]] <- pd$name[i]
-		}
-		pData(params) <- pd
-		fcs <- flowFrame(exprs(fcs),params,description=description(fcs))
-		keyword(fcs) <- keyval
-	}
-#if FMO is present Marcin tells me this means he forgot a stain
-    if ( 'FMO' %in% colnames(getChannels(fcs)) ) {
-        warning('FMO channel! Returning NULL.\n')
-        return(NULL)
+read.FCS <- function(file, EXPRS=TRUE, FILTER=FALSE, channels=c(), COMP=TRUE, verbose=FALSE, TRANS=logicleTransform(w=0.1), spillover=NULL, ...) {
+  if (verbose) {
+    fcs <- flowCore::read.FCS(file, ...)
+    print(fcs@description$FCSversion)
+  } else {
+    fcs <- suppressWarnings(flowCore::read.FCS(file, ...))
+  }
+  params <- fcs@parameters
+  pd <- pData(params)
+  # Replace any null descs with names (for FSC-A, FSC-W, SSC-A)
+  bad_col <- grep("^[a-zA-Z0-9]+",pd$desc,invert=TRUE)
+  if (length(bad_col) > 0) {
+  keyval <- keyword(fcs)
+    for (i in bad_col) {
+      pd$desc[i] <- pd$name[i]
+      keyval[[paste("$P",i,"S",sep="")]] <- pd$name[i]
     }
-	# Compensate data if SPILL or SPILLOVER present, stripping compensation matrix 
-	# out of the flowFrame, i.e we should only have to do this once
-	apply.comp <- function(in_fcs, keyword) {
-		comp_fcs <- compensate(in_fcs, description(in_fcs)[[keyword]])
-		#flowFrame(exprs(comp_fcs), parameters(comp_fcs), description(comp_fcs)[grep("SPILL",names(description(comp_fcs)),invert=TRUE)])
-		flowFrame(exprs(comp_fcs), comp_fcs@parameters, description(comp_fcs)[grep("SPILL",names(description(comp_fcs)),invert=TRUE)])
-	} 
-	if (COMP && !is.null(description(fcs)$SPILL)) {
-		fcs <- apply.comp(fcs, "SPILL")
-	} else if (COMP && !is.null(description(fcs)$SPILLOVER)) {
-		fcs <- apply.comp(fcs, "SPILLOVER")
-	}
-    #some filtering happens here
-    dim(fcs)
-    if (fcs@description$FCSversion=='3') {
-        if (FILTER) fcs <- fcs3.filter(fcs)
-        for (channel in channels) {
-            #i <- grep( channel, parameters(fcs)@data$desc, ignore.case=T )
-            if (is.null(TRANS)) trans <- identity
-            else if (channel == 'FSC-A') trans <- function(x) 5*x/262144
-            else if (channel == 'SSC-A') trans <- log10
-            else trans <- TRANS
-            #fcs@exprs[,i] <- trans(fcs@exprs[,i])
-            fcs <- setChannels(fcs, channel, trans(getChannels(fcs, channel)))
-        }
-    } else if (fcs@description$FCSversion=='2') {
-        for (channel in channels) {
-            #if (channel == 'FSC-A') trans <- function(x) 5*x/262144
-            if (is.null(TRANS)) trans <- identity
-            else if (channel == 'FSC-A') trans <- identity
-            else if (channel == 'SSC-A') trans <-identity 
-            else trans <- log10
-            #fcs@exprs[,i] <- trans(fcs@exprs[,i])
-            fcs <- setChannels(fcs, channel, trans(getChannels(fcs, channel)))
-        }
+    pData(params) <- pd
+    fcs <- flowFrame(exprs(fcs),params,description=description(fcs))
+    keyword(fcs) <- keyval
+  }
+  #if FMO is present Marcin tells me this means he forgot a stain
+  if ( 'FMO' %in% colnames(getChannels(fcs)) ) {
+    warning('FMO channel! Returning NULL.\n')
+    return(NULL)
+  }
+  # Compensate data if SPILL or SPILLOVER present, stripping compensation matrix 
+  # out of the flowFrame, i.e we should only have to do this once
+  apply.comp <- function(in_fcs, keyword) {
+    if (is.null(spillover)) {
+      comp_fcs <- compensate(in_fcs, description(in_fcs)[[keyword]])
+    } else {
+      print(description(in_fcs)[[keyword]])
+      comp_fcs <- compensate(in_fcs, spillover)
     }
-    if (FILTER) fcs <- fcs.filter(fcs)
-    dim(fcs)
-    if (EXPRS) return(getChannels(fcs, channels=channels))
-    else return(fcs)
+    #flowFrame(exprs(comp_fcs), parameters(comp_fcs), description(comp_fcs)[grep("SPILL",names(description(comp_fcs)),invert=TRUE)])
+    flowFrame(exprs(comp_fcs), comp_fcs@parameters, description(comp_fcs)[grep("SPILL",names(description(comp_fcs)),invert=TRUE)])
+  } 
+  if (COMP && !is.null(description(fcs)$SPILL)) {
+    fcs <- apply.comp(fcs, "SPILL")
+  } else if (COMP && !is.null(description(fcs)$SPILLOVER)) {
+    fcs <- apply.comp(fcs, "SPILLOVER")
+  }
+  #some filtering happens here
+  dim(fcs)
+  if (fcs@description$FCSversion=='3') {
+    if (FILTER) fcs <- fcs3.filter(fcs)
+    for (channel in channels) {
+        #i <- grep( channel, parameters(fcs)@data$desc, ignore.case=T )
+        if (is.null(TRANS)) trans <- identity
+        else if (channel == 'FSCA') trans <- function(x) 5*x/262144
+        else if (channel == 'SSCA') trans <- log10
+        else trans <- TRANS
+        #fcs@exprs[,i] <- trans(fcs@exprs[,i])
+        fcs <- setChannels(fcs, channel, trans(getChannels(fcs, channel)))
+    }
+  } else if (fcs@description$FCSversion=='2') {
+    for (channel in channels) {
+        #if (channel == 'FSC-A') trans <- function(x) 5*x/262144
+        if (is.null(TRANS)) trans <- identity
+        else if (channel == 'FSCA') trans <- identity
+        else if (channel == 'SSCA') trans <-identity 
+        else trans <- log10
+        #fcs@exprs[,i] <- trans(fcs@exprs[,i])
+        fcs <- setChannels(fcs, channel, trans(getChannels(fcs, channel)))
+    }
+  }
+  if (FILTER) fcs <- fcs.filter(fcs)
+  dim(fcs)
+  if (EXPRS) return(getChannels(fcs, channels=channels))
+  else return(fcs)
 }
 
 #returns a matrix
@@ -977,15 +986,15 @@ plotManualGates <- function(fcs.data, clr)  {
 }
 
 ### normalised.density plot
-smoothPlot1D <- function( x, nrpoints=0, colramp=colorRampPalette(c('white','blue','green','yellow','orange','red')), plot.points=NULL, plot.points.col='black', plot.file=NULL, classification=NULL, posteriors=NULL, posterior.cutoff=.95, outliers=FALSE, main='', xlab='', ylab='', clusters.col=NULL, ... ) {
+smoothPlot1D <- function( x, nrpoints=0, colramp=colorRampPalette(c('white','blue','green','yellow','orange','red')), plot.points=NULL, plot.points.col='black', classification=NULL, posteriors=NULL, posterior.cutoff=.95, outliers=FALSE, main='', xlab='', ylab='', clusters.col=NULL, col='black', ... ) {
    xquant <- quantile(x,probs=c(0.01,0.99))
    print(xlim <- c(xquant[['1%']],xquant[['99%']]))
    q1 <- quantile(x,probs=c(0.01,0.99))
    d <- normalised.density(x)
    if (!outliers)
-       plot(d,main=main,xlab=xlab,ylab=ylab,xlim=c(q1[['1%']],q1[['99%']]))
+       plot(d,main=main,xlab=xlab,ylab=ylab,xlim=c(q1[['1%']],q1[['99%']]),col=col,...)
    else
-       plot(d,main=main,xlab=xlab,ylab=ylab)
+       plot(d,main=main,xlab=xlab,ylab=ylab,col=col,...)
    if (!is.null(classification))
    for (k in sort(unique(classification))) {
        X1 <- x[which(classification==k)]
