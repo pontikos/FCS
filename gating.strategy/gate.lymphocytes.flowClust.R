@@ -1,12 +1,13 @@
 #!/usr/bin/env Rscript
 source('~nikolas/bin/FCS/fcs.R',chdir=T)
+source('~nikolas/bin/FCS/normalise-functions.R',chdir=T)
 suppressPackageStartupMessages(library("optparse"))
 suppressMessages(suppressWarnings(suppressPackageStartupMessages(library(flowClust, quietly=TRUE, verbose=FALSE, warn.conflicts=FALSE))))
 suppressMessages(suppressWarnings(suppressPackageStartupMessages(library(tools, quietly=TRUE, verbose=FALSE, warn.conflicts=FALSE))))
 suppressMessages(suppressWarnings(suppressPackageStartupMessages(library(feature, quietly=TRUE, verbose=FALSE, warn.conflicts=FALSE))))
 suppressMessages(suppressWarnings(suppressPackageStartupMessages(library(KernSmooth, quietly=TRUE, verbose=FALSE, warn.conflicts=FALSE))))
+suppressMessages(suppressWarnings(suppressPackageStartupMessages(library(ellipse, quietly=TRUE, verbose=FALSE, warn.conflicts=FALSE))))
 #suppressMessages(suppressWarnings(suppressPackageStartupMessages(library(RANN, quietly=TRUE, verbose=FALSE, warn.conflicts=FALSE))))
-
 
 
 #c('yellow','red','purple','green','pink')
@@ -95,22 +96,24 @@ plotflowclust <- function(x, subset, py=3, ellipse=T, show.outliers=T, show.rm=F
 
 ###
 ###
-plot.lymph <- function(d, res, lymph.filter=NULL, plot.file=NULL, prior=NULL) {
+plot.lymph <- function(d, res=NULL, lymph.filter=NULL, plot.file=NULL, prior=NULL, radius=.9) {
         cat('>>',plot.file,'\n')
-        png(plot.file)
+        if (!is.null(plot.file)) png(plot.file)
         par(mfrow=c(2,2))
-        for (chan in list(c('SSCA','FSCA'), c('FSCA','CD4'), c('SSCA','CD4'))) {
+        for (chan in list(c('SSCA','FSCA'), c('CD4','FSCA'), c('SSCA','CD4'))) {
             smoothScatter(d[,chan])
             lymph <- d[lymph.filter,chan]
             #points(lymph, pch=20, col='pink')
             chull.lymph <- c(chull(lymph),chull(lymph))
             lines(lymph[chull.lymph,], col='pink', lwd=2, lty=2)
+            #also approximate with an ellipse
+            lines(ellipse::ellipse(cov(lymph),centre=colMeans(lymph)),col='pink',lwd=2,lty=1)
             #lymph.gate <- c(chull(lymph), chull(lymph)[1])
             #lymph.gate <- c(lymph.gate, lymph.gate[1])
             #chuld <- lapply(lymph,"[",chull(lymph))
             #polygon(chuld,lty=2,border="black")
             #polygon(spline.poly(as.matrix(as.data.frame(chuld)),100),border="black",lwd=2)
-            plotflowclust(res, subset=chan, ecol=1:length(res@K), prior=prior)
+            if (!is.null(res)) plotflowclust(res, subset=chan, ecol=1:length(res@K), prior=prior)
         }
         #
         image(1:3,1:3,matrix(data=0,nrow=3,ncol=3), axes=FALSE, col='white', ylab='', xlab='')
@@ -122,48 +125,15 @@ plot.lymph <- function(d, res, lymph.filter=NULL, plot.file=NULL, prior=NULL) {
         text(1,2, 'total', font=2)
         text(2,2, dim(d)[[1]])
         text(3,2, 100)
-        dev.off()
+        if (!is.null(plot.file)) dev.off()
 }
 
 
 
-###
-density.filter <- function(x, channels, quant='25%') {
-    x <- getChannels(x, channels)
-    x <- apply(x, 2, scale)
-    dens1 <- kde2D(x[,c('FSCA','SSCA')])[,3]
-    dens2 <- kde2D(x[,c('SSCA','CD4')])[,3]
-    dens3 <- kde2D(x[,c('FSCA','CD4')])[,3]
-    dens1 <- dens1/sum(dens1)
-    dens2 <- dens2/sum(dens2)
-    dens3 <- dens3/sum(dens3)
-    q1 <- quantile(dens1)[[quant]]
-    q2 <- quantile(dens2)[[quant]]
-    q3 <- quantile(dens3)[[quant]]
-    f <- dens1 > q1 & dens2 > q2 & dens3 > q3
-    return(f)
-}
-
-
-###
-pool.data2 <- function(d, down.sample, channels) 
-    #pool data
-    #d <- getChannels( do.call('rbind', lapply(d, function(x) getChannels(x[sample(1:nrow(x), down.sample),]))), channels )
-    #d <- lapply(d, function(x) getChannels(x[sample(1:nrow(x), down.sample),], channels))
-    #way too slow!
-    #dens <- lapply(d, compute.density, channels=channels)
-    getChannels( do.call('rbind', 
-            lapply(d, function(x) {
-                #calculate pairwise density
-                table(f <- density.filter(x, channels, '25%'))
-                x <- getChannels(x[f,], channels)
-                return(x)
-                }) ), channels)
-
-pool.data <- function(d, down.sample, channels) return(getChannels( do.call('rbind', lapply(d, function(x) getChannels(x[sample(1:nrow(x), down.sample),]))), channels ))
 
 ### The CD4 lymphocyte cluster is the one with the CD4 mean intensity which is the closest to 2.5
 ### (this is not always true depending on the experiment)
+### As long as we can identify the CD4 lymph cluster in the pooled data then we are good.
 identify.lymph.cluster <- function(d, clusters, cd4.mfi=2.5) {
     #the cluster of lymphocytes is the one with the CD4 MFI which is the closest to 2.5
     cd4.means <- tapply(d[,'CD4'], clusters, mean)
@@ -178,44 +148,19 @@ identify.lymph.cluster <- function(d, clusters, cd4.mfi=2.5) {
     return(lymph.cluster <- which.min(abs(cd4.means-cd4.mfi)))
 }
 
-
-### density at each point for each component
-compute.dens <- function(d, res) sapply(1:res@K, function(i) res@w[i]*flowClust::dmvt(d, mu=res@mu[i,], sigma=res@sigma[i,,], nu=res@nu, lambda=res@lambda)$value)
-
-### posterior at each point for each component
-compute.posterior <- function(d, res) {
-    dens <- compute.dens(d, res)
-    total.dens <- rowSums(dens)
-    post <- dens/total.dens 
-    return(post)
-}
-
-### return the component assignment
-### Max a posteriori
-MAP <- function(d, res) {
-    post <- compute.posterior(d, res)
-    apply(post,1,which.max)
-}
-
-
 ###
 flowClust2Prior <- function (x, kappa, Nt = NULL) {
-    if (is.null(Nt)) {
-        Nt <- nrow(x@z)
-    }
+    if (is.null(Nt)) Nt <- nrow(x@z)
     p <- ncol(x@mu)
     K <- x@K
     nu0 <- Ng <- x@w * Nt
-    if (all((nu0 * kappa - p - 1) > 0)) {
+    if (all((nu0*kappa-p-1)>0)) {
         Lambda0 <- x@sigma
-        for (i in 1:K) {
-            Lambda0[i, , ] <- Lambda0[i, , ] * (kappa * nu0[i] - p - 1)
-        }
+        for (i in 1:K) 
+            Lambda0[i, , ] <- Lambda0[i, , ] * (kappa*nu0[i]-p-1)
     }
     else {
-        stop("Can't proceed. Prior nu0 is negative for cluster(s) ", 
-            paste(which((nu0 - p - 1) > 0), collapse = ","), 
-            "\n(p-1) = ", p - 1, ": Try increasing kappa")
+        stop("Can't proceed. Prior nu0 is negative for cluster(s) ", paste(which((nu0-p-1)>0), collapse=","), "\n(p-1) = ", p-1, ": Try increasing kappa")
     }
     Omega0 <- array(0, c(K, p, p))
     for (i in 1:K) {
@@ -230,7 +175,7 @@ flowClust2Prior <- function (x, kappa, Nt = NULL) {
         }
         k <- (dO/dS)^(1/p)
         Omega0[i, , ] <- Omega0[i, , ] * k
-        Omega0[i, , ] <- solve(Omega0[i, , ] * Ng[i] * kappa)
+        Omega0[i, , ] <- solve(Omega0[i, , ]*Ng[i]*kappa)
     }
     nu0 <- nu0 * kappa
     Mu0 <- x@mu
@@ -253,31 +198,30 @@ removeComponent <- function(res, i) {
 }
 
 
-###  make prior by pooling samples
+###  make prior from pooled sample file
 ### If nu is Inf then a Gaussian is used instead of a t distribution.
 ### Do not estimate lambda as this step is too computationally expensive and lambda is usually close to 1 anyway
 ### which just results in substracting 1 via the boxcox transform.
 ### Futhermore lambda makes data look different across samples so priors don't match data as well.
-make.lymph.prior <- function(fcs.files, down.sample=100, K=4, level=.5, B=500, channels=c('FSC-A','SSC-A','CD4'), plot.file=NULL, cd4.mfi=2.5, nu=Inf) {
+make.lymph.prior <- function(fcs.data, K=4, level=.5, B=500, channels=c('FSCA','SSCA','CD4'), plot.file=NULL, cd4.mfi=2.5, nu=4, pool.file=NULL) {
     num.clusters <- 0
-    #resample until we have the desired number of clusters
-    while (num.clusters!=K) {
-        d <- pool.data(fcs.files, down.sample, channels)
-        cat('pooled data dim', dim(d), '\n')
-        print(head(d))
-        #scaled.d <- apply(d,2,scale)
-        res <- flowClust::flowClust(d,K=K,B=B,level=level,trans=0,lambda=1,nu=nu)
-        clusters <- Map(res)
-        print(num.clusters <- length(table(clusters)))
-    }
+    d <- fcs.data[,channels]
+    cat('pooled data dim', dim(d), '\n')
+    print(head(d))
+    print(dim(d))
+    #scaled.d <- apply(d,2,scale)
+    res <- flowClust::flowClust(d,K=K,B=B,level=level,trans=0,lambda=1,nu=nu)
+    clusters <- Map(res)
+    print(num.clusters <- length(table(clusters)))
+    #}
     prior <- flowClust2Prior(res,kappa=1)
     #if (!is.null(plot.file)) plotPrior(d, prior=prior, plot.file=gsub('.fcs','',plot.file))
-    if (!is.null(plot.file)) plotFlowClustRes(d, res, plot.file=gsub('.fcs','',plot.file))
+    if (!is.null(plot.file)) plotClustRes(d, res, plot.file=gsub('.fcs','',plot.file))
     dens <- compute.dens(d, res)
     total.dens <- rowSums(dens)
     # posterior probability of belonging to each cluster
     post <- dens/total.dens 
-    post <- compute.posterior(d, res)
+    post <- compute.post(d, res)
     # assignment to whichever clusters has the highest posterior probability
     clustering <- apply(post,1,which.max)
     cat('>>lymph.pop', lymph.cluster <- identify.lymph.cluster(d, clustering, cd4.mfi), '\n')
@@ -293,11 +237,22 @@ make.lymph.prior <- function(fcs.files, down.sample=100, K=4, level=.5, B=500, c
     cat('>>gated.lymph.cluster.weight', 100*length(lymph.filter)/length(clustering), '\n') 
     # estimates of lymph cluster
     #getEstimates(res)[[
-    #
-    #if (!is.null(plot.file)) plotFlowClustPrior(d, prior)
-    return( list(prior=prior,res=res,data=d,lymph.cluster=lymph.cluster) )
+    return( list(prior=prior,res=res,data=d,lymph.cluster=lymph.cluster,lymph.filter=lymph.filter) )
 }
 
+
+###
+gate.singlets <- function(X,lymph.filter,k=3) {
+    #filter on SSCW
+    sscw <- X[lymph.filter,'SSCW']
+    med <- median(sscw)
+    sscw.filter <- which(med-k*median(abs(med-sscw)) < sscw & sscw < med+k*median(abs(med-sscw)))
+    return(sscw.filter)
+    #FSCH,SSCH,FSCW,SSCW
+    #m <- covMcd(X)
+    #m$mah < max(m$mah)
+    #mahalanobis(X)
+} 
 
 
 ### gate lymphocytes
@@ -306,22 +261,22 @@ make.lymph.prior <- function(fcs.files, down.sample=100, K=4, level=.5, B=500, c
 ### 2) lymphocyte cluster is the one with the CD4 mean intensity which is the closest to 2.5
 ###   (this is not always true depending on the experiment and needs to be an argument to this function)
 ### kappa is the prior weight relative to the sample, see flowClust2Prior
-gate.lymph <- function(d, fcs.name=NULL, down.sample=.1, K=4, level=.9, u.cutoff=.5, B=500, post.threshold=.99, channels=c('FSC-A','SSC-A','CD4'), prior=NULL, plot.file=NULL, out.file=NULL, lymph.cluster=NULL, kappa=100) {
+gate.lymph <- function(d, fcs.name=NULL, K=4, level=.9, u.cutoff=.5, B=5000, post.threshold=.99, channels=c('FSCA','SSCA','CD4'), prior=NULL, plot.file=NULL, out.file=NULL, lymph.cluster=NULL, kappa=1) {
     d.original <- d
     #prior <- prior$prior
     if (is.null(prior)) usePrior <- 'no' else usePrior <- 'yes'
     prior$prior <- flowClust2Prior(prior$res,kappa=kappa)
     if (is(d,'flowFrame')) d<-getChannels(d, channels)
+    else d <- d[,channels]
     #subset
     num.clusters <- 0
     cat('Prior\n')
     print(prior$prior)
     print(prior$res)
-    #resample until we have the desired number of clusters
-    #while (num.clusters!=K)
-    #if (down.sample > 1) d.sub <- sample(1:nrow(d),round(down.sample)) else d.sub <- sample(1:nrow(d),round(nrow(d)*down.sample))
+    #
     res <- flowClust::flowClust(d,K=K,B=B,usePrior=usePrior,prior=prior$prior,level=level,u.cutoff=u.cutoff,trans=0,lambda=1,control=list(B.lambda=0))
-    save(res, prior, d, fcs.name, file=out.file, compress='xz', compression_level=9)
+    result <- list(res=res, prior=prior, d=d.original, fcs.name=fcs.name)
+    save(result, file=out.file, compress='xz', compression_level=9)
     clusters <- Map(res)
     cat('Number of clusters', num.clusters <- length(table(clusters)), '\n')
     # checks
@@ -355,56 +310,13 @@ gate.lymph <- function(d, fcs.name=NULL, down.sample=.1, K=4, level=.9, u.cutoff
     cat('>>gated.lymph.cluster.weight', 100*length(lymph.filter)/length(clustering), '\n') 
     #
     if (!is.null(plot.file)) plot.lymph(d, res=res, lymph.filter=lymph.filter, plot.file=plot.file)
-    #if (!is.null(plot.file)) plotPrior(d, prior, plot.file=gsub('.fcs.png','-prior.png',plot.file))
-    if (!is.null(plot.file)) plotFlowClustRes(d, prior$res, plot.file=gsub('.fcs.png','-prior.png',plot.file))
-    if (!is.null(plot.file)) plotFlowClustRes(d, res, plot.file=gsub('.fcs.png','-posterior.png',plot.file))
+    #if (!is.null(plot.file)) plotPrior(d, prior, plot.file=gsub('.png','-prior.png',plot.file))
+    if (!is.null(plot.file)) plotClustRes(d, prior$res, outliers=TRUE, plot.file=gsub('.png','-prior.png',plot.file))
+    if (!is.null(plot.file)) plotClustRes(d, res, plot.file=gsub('.png','-posterior.png',plot.file))
     if (is.null(out.file)) return(lymph.filter)
-    ext <- file_ext(out.file)
-    if (ext == 'idx') write.csv(lymph.filter, file=out.file, quote=FALSE, row.names=FALSE, col.names=FALSE)
-    else if (ext == 'RData')
-        save(res, lymph.filter, d, fcs.name, file=out.file, compress='xz', compression_level=9)
-    return(lymph.filter)
+    result$lymph.filter <- lymph.filter
+    return(result)
 }
-
-
-
-### gate lymphocytes fixed gate:
-### Gate specified in prior.
-fixed.gate.lymph <- function(d, fcs.name=NULL, channels=c('FSC-A','SSC-A','CD4'), prior=NULL, plot.file=NULL, out.file=NULL) {
-    d.original <- d
-    if (is(d,'flowFrame')) d<-getChannels(d, channels)
-    cat('Prior\n')
-    print(prior)
-    res <- prior$res
-    lymph.cluster <- prior$lymph.cluster
-    #compute dens in whole sample
-    dens <- compute.dens(d, res)
-    total.dens <- rowSums(dens)
-    # posterior probability of belonging to each cluster
-    post <- dens/total.dens 
-    # assignment to whichever clusters has the highest posterior probability
-    clustering <- apply(post,1,which.max)
-    #lymph.cluster <- identify.lymph.cluster(d, clustering, cd4.mfi)
-    # further filtering by total density so that we exclude low density points
-    print( length( lymph.filter <- which((clustering==lymph.cluster)&(total.dens>quantile(total.dens,probs=seq(0,1,.05))[['5%']])) ) )
-    #
-    cat('>>initial.weights', res@w, '\n' )
-    w <- table(clustering)/length(clustering)
-    cat('>>updated.weights', w, '\n' )
-    cat('>>subset.lymph.cluster.pct',100*res@w[lymph.cluster],'\n')
-    cat('>>all.lymph.cluster.pct', 100*w[lymph.cluster], '\n') 
-    cat('>>gated.lymph.cluster.weight', 100*length(lymph.filter)/length(clustering), '\n') 
-    #
-    if (!is.null(plot.file)) plot.lymph(d, res=res, lymph.filter=lymph.filter, plot.file=plot.file)
-    if (!is.null(plot.file)) plotPrior(d, prior$prior, plot.file=gsub('.fcs.png','-prior.png',plot.file))
-    if (is.null(out.file)) return(lymph.filter)
-    ext <- file_ext(out.file)
-    if (ext == 'idx') write.csv(lymph.filter, file=out.file, quote=FALSE, row.names=FALSE, col.names=FALSE)
-    else if (ext == 'RData')
-        save(res, lymph.filter, d, fcs.name, file=out.file, compress='xz', compression_level=9)
-    return(lymph.filter)
-}
-
 
 
 ### MAIN
@@ -412,7 +324,7 @@ fixed.gate.lymph <- function(d, fcs.name=NULL, channels=c('FSC-A','SSC-A','CD4')
 option_list <- list( 
     make_option(c("-f","--in.file"), help = 'FCS file to parse or list of files in a csv file.'),
     make_option(c('--down.sample'), default=.1, help='A numeric value between 0 and 1 specifying the ratio by which to downsample to achieve flowClust speedup.  The default 0.1, meaning that 10% of the data will be randomly sampled. Can also be a number bigger than 1 in which case it is interpreted as the number of events to randomly sample.'),
-    make_option(c('--channels'), default='FSCA,SSCA,CD4', help='Channels on which to do the clustering.  By default CD4 lymphocyte gating works on Forward, Side Scatter and CD4.'),
+    make_option(c('--channels'), default='FSCA,SSCA,CD4,SSCW,SSCH', help='Channels on which to do the clustering.  By default CD4 lymphocyte gating works on Forward, Side Scatter and CD4.'),
     make_option(c('-K', '--clusters'), default=5, help='Number of clusters.  The default is 5.'),
     make_option(c('--level'), default=.9, help='A numeric value between 0 and 1 specifying the threshold quantile level used to call a point an outlier.  The default is 0.9, meaning that any point outside the 90% quantile region will be called an outlier.'),
     make_option(c('-B', '--em.iterations'), default=500, help='Number of EM iterations.'),
@@ -420,8 +332,8 @@ option_list <- list(
     make_option(c('--plot.dir'), default=NULL, help='The directory to which to send the plots.'),
     make_option(c('--out.dir'), default=NULL, help = 'Output file which may be a subset FCS file, indexes or the flowClust result object.'),
     make_option(c('--prior'), default=NULL, help='Prior file to use.'),
-    make_option(c('--cd4.mfi'), default=2.5, help='The expected CD4 MFI of the CD4+ lymphocyte cluster.'),
-    make_option(c('--lymph.cluster'), default=NULL, help='The lymph cluster')
+    make_option(c('--pool.file'), default=NULL, help='Pool file.'),
+    make_option(c('--cd4.mfi'), default=2.5, help='The expected CD4 MFI of the CD4+ lymphocyte cluster.')
 )
 
 option.parser <- OptionParser(option_list=option_list)
@@ -431,7 +343,7 @@ opt <- parse_args(option.parser)
 if (is.null(opt$in.file) || !file.exists(opt$in.file))
     stop("No FCS file specified on command line or file does not exist.")
 if (!is.null(opt$channels)) {
-    channels <- unlist(strsplit(opt$channels, ","))
+    print(channels <- unlist(strsplit(opt$channels, ",")))
 } else  {
     channels <- NULL
 }
@@ -449,52 +361,89 @@ if (!is.null(opt$out.dir)) {
     prior.out.file <- NULL
     out.file <- NULL
 }
-# either takes a single fcs file or a list of fcs files
-if (tolower(file_ext(opt$in.file))=='fcs') {
-    # expect a single fcs files
-    cat('Reading', opt$in.file, '\n')
-    fcs.files <- list(suppressWarnings(read.FCS(opt$in.file, channels=channels)))
-    names(fcs.files) <- opt$in.file
-} else if (tolower(file_ext(opt$in.file))=='csv') {
-    # expect a list of fcs files in the csv file
-    fcs.names <- as.character(read.csv(opt$in.file)[,1])
-    cat('Reading', fcs.names, '\n')
-    fcs.files <- lapply(fcs.names, read.FCS, channels=channels)
-    names(fcs.files) <- fcs.names
+
+## READ DATA
+# takes a single fcs, csv or RData file
+cat('Reading', in.file <- opt$in.file, '\n')
+cat('File extension', file.ext <- tolower(file_ext(opt$in.file)), '\n')
+if (file.ext=='fcs') {
+    #fcs file
+    print(head(fcs.data <- getChannels(read.FCS(in.file, channels=channels),channels)))
+    #My version of read.FCS discards events on axis so total count is less that what is in FCS file initially.
+    cat('total.count', total.count <- as.numeric(read.FCSheader(in.file,keyword='$TOT')), '\n')
+} else if (file.ext=='csv') {
+    #csv file
+    print(head(fcs.data <- read.csv(in.file)[,channels]))
+    print(total.count <- dim(fcs.data)[[1]])
+} else if (file.ext=='rdata') {
+    #rdata file
+    if (exists('x')) rm(x)
+    print(load(in.file))
+    if (exists('x')) fcs.data <- x
+    print(head(fcs.data <- fcs.data[,channels]))
+    print(total.count <- dim(fcs.data)[[1]])
+} else {
+    stop('Unsupported file extension', file.ext,'\n')
 }
 
 # Two modes of operation: either compute prior or run on all files with specified prior
 # If no prior file specified
-# make a prior from a pool of fcs files specified in in.file
-# otherwise load prior from specified file
+# make a prior from pooled fcs file specified in in.file
+# otherwise load prior from specified file and write out.file
 if (is.null(opt$prior)) {
+    # Compute prior from pooled data
     cat('No prior specified, will estimate prior from pooled data.\n')
     print( prior.plot.file )
-    prior <- make.lymph.prior( fcs.files, K=opt$clusters, channels=channels, plot.file=prior.plot.file, B=opt$em.iterations, level=opt$level, down.sample=opt$down.sample, cd4.mfi=opt$cd4.mfi, nu=4 )
+    prior <- make.lymph.prior(fcs.data, K=opt$clusters, plot.file=prior.plot.file, B=opt$em.iterations, level=opt$level, cd4.mfi=opt$cd4.mfi, nu=4)
     print( prior$prior )
     print(prior.out.file)
     save(prior, file=prior.out.file)
 } else {
+    # Cluster using prior
     cat('Prior specified.\n')
     print(load(opt$prior))
-    for (fcs.name in names(fcs.files)) {
-        fcs.data <- fcs.files[[fcs.name]]
-        print(fcs.name)
-        if (!is.null(opt$plot.dir)) print(plot.file <- file.path(opt$plot.dir,paste(basename(fcs.name),'.png',sep='')))
-        if (!is.null(opt$out.dir))  print(out.file <- file.path(opt$out.dir, paste(basename(fcs.name),'.RData',sep='')))
-        if (file.exists(out.file)) {
-            cat(out.file, 'exists not running again!\n')
-        } else {
-            lymph.filter <- gate.lymph( fcs.data, fcs.name=fcs.name, channels=channels, K=opt$clusters, level=opt$level, plot.file=plot.file, prior=prior, post.threshold=opt$post.threshold, out.file=out.file, down.sample=opt$down.sample, lymph.cluster=prior$lymph.cluster)
-            #lymph.filter <- fixed.gate.lymph( fcs.data, fcs.name=fcs.name, channels=channels, plot.file=plot.file, prior=prior, out.file=out.file)
-        }
-        total.count <- dim(fcs.data)[[1]]
-        lymph.count <- length(lymph.filter)
-        lymph.pct <- 100*lymph.count/total.count
-        cat('>',fcs.name,',total.count,', total.count, '\n',sep='')
-        cat('>',fcs.name,',lymph.count,', lymph.count, '\n',sep='')
-        cat('>',fcs.name,',lymph.pct,', lymph.pct, '\n',sep='')
+    print(fcs.name <- in.file)
+    if (!is.null(opt$plot.dir)) print(plot.file <- file.path(opt$plot.dir,paste(basename(file_path_sans_ext(fcs.name)),'.png',sep='')))
+    if (!is.null(opt$out.dir))  print(out.file <- file.path(opt$out.dir, paste(basename(file_path_sans_ext(fcs.name)),'.RData',sep='')))
+    # flowClust results exists already
+    if (file.exists(out.file)) {
+        cat(out.file, 'exists not running again!\n')
+        print(load(out.file))
+    } else {
+        result <- gate.lymph(fcs.data,
+                                   fcs.name=fcs.name,
+                                   K=opt$clusters,
+                                   level=opt$level,
+                                   plot.file=plot.file,
+                                   prior=prior,
+                                   post.threshold=opt$post.threshold,
+                                   out.file=out.file,
+                                   lymph.cluster=prior$lymph.cluster,
+                                   kappa=1)
+        save(result, file=out.file, compress='xz', compression_level=9)
+
     }
+    fcs.name <- result$fcs.name
+    lymph.filter <- result$lymph.filter
+    if ('SSCW' %in% channels) singlet.filter <- gate.singlets(fcs.data, lymph.filter, 4)
+    result$singlet.filter <- singlet.filter
+    lymph.count <- length(singlet.filter)
+    lymph.pct <- 100*lymph.count/total.count
+    cat('>',fcs.name,',total.count,', total.count, '\n',sep='')
+    cat('>',fcs.name,',lymph.count,', lymph.count, '\n',sep='')
+    cat('>',fcs.name,',lymph.pct,', lymph.pct, '\n',sep='')
+    print(range(lymph.filter))
+    #write lymphocytes to csv file
+    cd4.lymphocytes <- fcs.data[lymph.filter,channels][singlet.filter,]
+    print(head(cd4.lymphocytes))
+    for (i in channels) {
+        print(i)
+        swp <- sliding.window.peaks(density(cd4.lymphocytes[,i]),span=40)
+        print(swp <- swp[which(swp$y > .05*max(swp$y)),])
+        cat(i, 'peak modality', nrow(swp),'\n')
+        if (nrow(swp)>2) cat('Peak modality > 2', i, '\n')
+    }
+    save(result, file=out.file, compress='xz', compression_level=9)
 }
 
 

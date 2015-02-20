@@ -4,6 +4,7 @@ option_list <- list(
     make_option(c("-f","--in.file"), help = 'FCS file to parse or list of files in a csv file.'),
     make_option(c('--channels'), default='FSC-A,SSC-A,CD4', help='Channels on which to do the clustering.  By default CD4 lymphocyte gating works on Forward, Side Scatter and CD4.'),
     make_option(c('--density.threshold'), default='50%', help=''),
+    make_option(c('--cd4.mfi'), default=2.5, help='The expected CD4 MFI of the CD4+ lymphocyte cluster.'),
     make_option(c('--plot.dir'), default=NULL, help='The directory to which to send the plots.')
 )
 
