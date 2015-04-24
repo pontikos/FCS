@@ -3,7 +3,7 @@ suppressPackageStartupMessages(library("optparse"))
 suppressMessages(suppressWarnings(suppressPackageStartupMessages(library(tools, quietly=TRUE, verbose=FALSE, warn.conflicts=FALSE))))
 source('~nikolas/bin/FCS/fcs.R')
 
-# Simply pools all files together but in the future may decide to do normalisation before normalisation.
+# Simply pools all files together but in the future may decide to do normalisation before pooling.
 
 
 option_list <- list( 
