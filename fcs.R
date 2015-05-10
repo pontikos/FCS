@@ -592,11 +592,8 @@ plotClusters <- function(x, plot.points=NULL, plot.points.col='black', plot.poin
         plotClusters1D(x, classification, ...)
         return(NULL)
     }
-    if (is.null(colnames(x))) {
-        colnames(x) <- as.character(1:ncol(x))
-    } else {
-        col.names <- colnames(x)
-    }
+    if (is.null(colnames(x))) colnames(x) <- as.character(1:ncol(x))
+    col.names <- colnames(x)
     nc <- ncol(x)
     cat('>>',plot.file,'\n')
     if (!is.null(plot.file)) png(plot.file)
