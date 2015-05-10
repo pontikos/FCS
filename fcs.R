@@ -592,7 +592,11 @@ plotClusters <- function(x, plot.points=NULL, plot.points.col='black', plot.poin
         plotClusters1D(x, classification, ...)
         return(NULL)
     }
-    col.names <- colnames(x)
+    if (is.null(colnames(x))) {
+        colnames(x) <- as.character(1:ncol(x))
+    } else {
+        col.names <- colnames(x)
+    }
     nc <- ncol(x)
     cat('>>',plot.file,'\n')
     if (!is.null(plot.file)) png(plot.file)
@@ -679,8 +683,8 @@ plotClusters <- function(x, plot.points=NULL, plot.points.col='black', plot.poin
                    else points(cbind(X1,0), col=col, pch=20)
                } 
             }
-            if (n==1) mtext(col.names[[n2]], side=3, cex=2, line=1) 
-            if (n2==1) mtext(col.names[[n]], side=2, cex=2, line=2)
+            if (n==1) mtext(col.names[[n2]], side=3, cex=.75, line=1) 
+            if (n2==1) mtext(col.names[[n]], side=2, cex=.75, line=2)
        }
     }
     if (!is.null(plot.file)) dev.off()
